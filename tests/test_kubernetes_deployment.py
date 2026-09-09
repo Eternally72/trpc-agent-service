@@ -1,0 +1,44 @@
+"""Regression checks for deployment-only Kubernetes integration contracts."""
+
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_channel_secrets_use_encrypted_tenant_secret_store() -> None:
+    """Kubernetes must not restore the removed per-tenant file-secret path."""
+
+    application = (PROJECT_ROOT / "deploy/kubernetes/application.yaml").read_text(encoding="utf-8")
+    deploy_script = (PROJECT_ROOT / "deploy/kubernetes/deploy.sh").read_text(encoding="utf-8")
+
+    assert "tenant_secret_master_key" in deploy_script
+    assert "prune_unused_project_images" in deploy_script
+    assert "trpc-channel-files" not in deploy_script
+    assert "normalize_channel_secret_refs" not in deploy_script
+    assert "channel-input" not in application
+    assert "channel-output" not in application
+    assert "mountPath: /run/secrets/tenants" not in application
+
+
+def test_destructive_scripts_pin_the_local_cluster_context() -> None:
+    """Never stop or remove a same-named namespace in another cluster."""
+
+    for script_name in ("stop.sh", "remove.sh"):
+        script = (PROJECT_ROOT / "deploy/kubernetes" / script_name).read_text(encoding="utf-8")
+        assert 'kubectl config current-context' in script
+        assert '!= "docker-desktop"' in script
+
+
+def test_worker_scaler_has_narrow_deployment_scale_permission() -> None:
+    application = (PROJECT_ROOT / "deploy/kubernetes/application.yaml").read_text(encoding="utf-8")
+    config = (PROJECT_ROOT / "deploy/kubernetes/app.env").read_text(encoding="utf-8")
+    deploy_script = (PROJECT_ROOT / "deploy/kubernetes/deploy.sh").read_text(encoding="utf-8")
+    stop_script = (PROJECT_ROOT / "deploy/kubernetes/stop.sh").read_text(encoding="utf-8")
+
+    assert "name: worker-scaler" in application
+    assert 'resources: ["deployments/scale"]' in application
+    assert 'resourceNames: ["agent-worker"]' in application
+    assert "value: supervisor" in application
+    assert "TRPC_SERVICE_WORKER_SCALER_MODE=kubernetes" in config
+    assert "rollout status deployment/worker-scaler" in deploy_script
+    assert stop_script.index("deployment/worker-scaler") < stop_script.index("deployment/gateway")

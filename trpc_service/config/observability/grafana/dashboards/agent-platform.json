@@ -1,0 +1,70 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "graphTooltip": 1,
+  "panels": [
+    {
+      "datasource": {"type": "prometheus", "uid": "trpc-prometheus"},
+      "fieldConfig": {"defaults": {"unit": "reqps"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 0},
+      "id": 1,
+      "targets": [{"expr": "sum(rate(trpc_agent_requests_total[5m])) by (result)", "legendFormat": "{{result}}", "refId": "A"}],
+      "title": "Agent 请求速率",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "trpc-prometheus"},
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 0},
+      "id": 2,
+      "targets": [{"expr": "histogram_quantile(0.95, sum(rate(trpc_agent_execution_duration_seconds_bucket[5m])) by (le))", "legendFormat": "P95", "refId": "A"}],
+      "title": "Agent 执行延迟",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "trpc-prometheus"},
+      "fieldConfig": {"defaults": {}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 0},
+      "id": 3,
+      "targets": [{"expr": "sum(rate(trpc_governance_decisions_total[5m])) by (action, reason_code)", "legendFormat": "{{action}} / {{reason_code}}", "refId": "A"}],
+      "title": "治理决策",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "trpc-prometheus"},
+      "fieldConfig": {"defaults": {"unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 8},
+      "id": 4,
+      "targets": [{"expr": "sum(rate(trpc_storage_operations_total[5m])) by (operation, result)", "legendFormat": "{{operation}} / {{result}}", "refId": "A"}],
+      "title": "存储操作",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "trpc-prometheus"},
+      "fieldConfig": {"defaults": {"unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 8},
+      "id": 5,
+      "targets": [{"expr": "sum(rate(trpc_tool_calls_total[5m])) by (tool_name, result)", "legendFormat": "{{tool_name}} / {{result}}", "refId": "A"}],
+      "title": "Tool 调用",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "trpc-prometheus"},
+      "fieldConfig": {"defaults": {"unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 8},
+      "id": 6,
+      "targets": [{"expr": "sum(rate(trpc_im_deliveries_total[5m])) by (channel_type, result)", "legendFormat": "{{channel_type}} / {{result}}", "refId": "A"}],
+      "title": "IM 回写",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 41,
+  "tags": ["trpc-agent-service"],
+  "templating": {"list": []},
+  "time": {"from": "now-6h", "to": "now"},
+  "timezone": "browser",
+  "title": "Agent 平台运行概览",
+  "uid": "trpc-agent-platform",
+  "version": 1
+}

@@ -1,0 +1,19 @@
+body.platform-console {
+  --accent: #284b8f;
+  --accent-strong: #193667;
+  --accent-soft: #eaf0fb;
+  --sidebar: #15233d;
+  --sidebar-muted: #98a9c5;
+}
+
+.runtime-layout { display: grid; gap: 20px; }
+.pool-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 20px; }
+.pool-metrics div { display: grid; gap: 6px; border: 1px solid var(--line); border-radius: 10px; padding: 14px; background: var(--canvas); }
+.pool-metrics span { color: var(--muted); font-size: 12px; }
+.pool-metrics strong { color: var(--ink); font-size: 22px; }
+.pool-scale-form { display: grid; grid-template-columns: minmax(220px, 1fr) auto; align-items: end; gap: 16px; }
+
+@media (max-width: 720px) {
+  .pool-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .pool-scale-form { grid-template-columns: 1fr; }
+}
