@@ -61,6 +61,7 @@ from trpc_service.storage.types import (
     OutboxMessage,
     SessionSnapshot,
 )
+from trpc_service.storage.session_cache import SessionSnapshotCache
 from trpc_service.log import SensitiveDataRedactor
 from trpc_service.metrics import PlatformTelemetry
 from trpc_service.tenant.models import Tenant
@@ -384,6 +385,7 @@ class StorageExecutionCoordinator(AgentExecutionCoordinator):
                 claim_id=claim.inbox_id,
                 request_id=claim.request_id,
                 fencing_token=claim.fencing_token,
+                session_version=claim.session_version,
                 request=request,
                 runtime_config=config,
                 completed=AgentExecutionReceipt(
@@ -396,6 +398,7 @@ class StorageExecutionCoordinator(AgentExecutionCoordinator):
             claim_id=claim.inbox_id,
             request_id=claim.request_id,
             fencing_token=claim.fencing_token,
+            session_version=claim.session_version,
             request=request,
             runtime_config=config,
         )
@@ -480,10 +483,12 @@ class StorageContextBuilder(AgentContextBuilder):
         storage: StorageRouter | ResolvedStorage,
         telemetry: PlatformTelemetry | None = None,
         knowledge_service: TenantKnowledgeService | None = None,
+        session_cache: SessionSnapshotCache | None = None,
     ) -> None:
         self._storage = _RuntimeStorageResolver(storage)
         self._telemetry = telemetry
         self._knowledge_service = knowledge_service
+        self._session_cache = session_cache
 
     async def build(
         self,
@@ -505,11 +510,21 @@ class StorageContextBuilder(AgentContextBuilder):
             },
         ) if self._telemetry is not None else None)
         try:
-            if span_context is None:
-                session = await storage.session.load(request.tenant, request.session_id)
-            else:
-                with span_context:
+            session = None
+            if self._session_cache is not None and claim.session_version is not None:
+                session = await self._session_cache.get(
+                    request.tenant,
+                    request.session_id,
+                    expected_version=claim.session_version,
+                )
+            if session is None:
+                if span_context is None:
                     session = await storage.session.load(request.tenant, request.session_id)
+                else:
+                    with span_context:
+                        session = await storage.session.load(request.tenant, request.session_id)
+                if session is not None and self._session_cache is not None:
+                    await self._session_cache.put(request.tenant, session)
         except Exception:
             if self._telemetry is not None:
                 self._telemetry.record_storage(
@@ -682,9 +697,11 @@ class StorageResultCommitter(AgentResultCommitter):
         self,
         storage: StorageRouter | ResolvedStorage,
         telemetry: PlatformTelemetry | None = None,
+        session_cache: SessionSnapshotCache | None = None,
     ) -> None:
         self._storage = _RuntimeStorageResolver(storage)
         self._telemetry = telemetry
+        self._session_cache = session_cache
 
     async def commit(
         self,
@@ -778,6 +795,8 @@ class StorageResultCommitter(AgentResultCommitter):
                 result="success",
                 duration_seconds=perf_counter() - started,
             )
+        if self._session_cache is not None:
+            await self._session_cache.put(request.tenant, snapshot)
         return AgentExecutionReceipt(
             session=snapshot,
             # Only the IM publisher consumes these IDs. Other Outbox categories
@@ -813,6 +832,7 @@ def build_local_agent_pipeline(
     tool_ledger: ToolLedger | None = None,
     workspace_provider: WorkspaceProvider | None = None,
     mcp_service: AgentToolInvoker | None = None,
+    session_cache: SessionSnapshotCache | None = None,
 ) -> AgentExecutionPipeline:
     """Compose the concrete Agent chain around stable abstract ports."""
 
@@ -849,7 +869,12 @@ def build_local_agent_pipeline(
             usage_reader=(usage_recorder if isinstance(usage_recorder, UsageReader) else None),
         ),
         context_builder=GovernanceContextBuilder(
-            StorageContextBuilder(storage, telemetry, knowledge_service),
+            StorageContextBuilder(
+                storage,
+                telemetry,
+                knowledge_service,
+                session_cache,
+            ),
             redactor,
         ),
         runner=observed_runner,
@@ -861,7 +886,7 @@ def build_local_agent_pipeline(
             ledger=tool_ledger,
         ),
         output_filter=GovernanceOutputFilter(redactor),
-        committer=StorageResultCommitter(storage, telemetry),
+        committer=StorageResultCommitter(storage, telemetry, session_cache),
         publisher=DeferredOutboxPublisher(),
         usage_recorder=usage_recorder,
         workspace_provider=workspace,

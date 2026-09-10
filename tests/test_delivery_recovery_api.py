@@ -67,6 +67,7 @@ async def test_delivery_failures_are_tenant_scoped_and_replay_is_audited(tmp_pat
                         payload={"private": "must not be returned"},
                         status="DEAD_LETTER",
                         attempt_count=8,
+                        retry_count=3,
                         last_error_code="InvalidRecipient",
                         last_error_summary="Channel delivery cannot be retried",
                     ))
@@ -91,6 +92,16 @@ async def test_delivery_failures_are_tenant_scoped_and_replay_is_audited(tmp_pat
             assert replayed.json() == {"outbox_id": "failed-reply", "status": "PENDING"}
             assert duplicate.status_code == 404
             async with app.state.session_factory() as database:
+                replayed_row = await database.scalar(
+                    select(OutboxMessageRow).where(
+                        OutboxMessageRow.tenant_id == tenant_id,
+                        OutboxMessageRow.outbox_id == "failed-reply",
+                    ))
+                assert replayed_row is not None
+                # Historical provider attempts remain addressable, while the
+                # manual replay receives a fresh retry budget.
+                assert replayed_row.attempt_count == 8
+                assert replayed_row.retry_count == 0
                 audit = await database.scalar(
                     select(ManagementAuditLog).where(
                         ManagementAuditLog.action == "delivery_failure.replay",

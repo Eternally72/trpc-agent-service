@@ -6,7 +6,7 @@ from pathlib import Path
 from trpc_agent_sdk.agents import LlmAgent
 from trpc_agent_sdk.models import OpenAIModel
 from trpc_agent_sdk.runners import Runner
-from trpc_agent_sdk.sessions import InMemorySessionService
+from trpc_agent_sdk.sessions import InMemorySessionService, SessionServiceConfig
 from trpc_agent_sdk.abc import ToolABC
 from trpc_agent_sdk.skills import BaseSkillRepository
 from trpc_agent_sdk.tools import FunctionTool
@@ -103,14 +103,22 @@ def build_trpc_agent_runner(
         skill_repository=(None if has_images else skill_repository),
         generate_content_config=generation_config,
     )
+    sdk_sessions = InMemorySessionService(session_config=SessionServiceConfig(
+        max_events=settings.session_cache_max_events,
+        num_recent_events=settings.session_cache_max_events,
+    ))
     sdk_runner = Runner(
         app_name=settings.service_name,
         agent=agent,
-        session_service=InMemorySessionService(),
+        session_service=sdk_sessions,
         # Platform Session/Memory/Outbox adapters own post-turn persistence.
         enable_post_turn_processing=False,
     )
-    return TRPCAgentRunner(sdk_runner)
+    return TRPCAgentRunner(
+        sdk_runner,
+        sdk_sessions,
+        app_name=settings.service_name,
+    )
 
 
 class ConfiguredTRPCAgentRunner(AgentRunner):

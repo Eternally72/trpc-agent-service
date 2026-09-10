@@ -90,6 +90,9 @@ async def replay_delivery_failure(
     row.lease_until = None
     row.last_error_code = None
     row.last_error_summary = None
+    # A replay receives a fresh retry budget while attempt_count remains a
+    # monotonic key for the immutable provider-attempt audit trail.
+    row.retry_count = 0
     append_management_audit(
         session,
         actor,

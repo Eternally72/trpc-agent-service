@@ -519,6 +519,7 @@ class OutboxMessageRow(Base, TimestampMixin):
             name="uq_outbox_message_request_sequence",
         ),
         CheckConstraint("attempt_count >= 0", name="outbox_message_attempt_nonnegative"),
+        CheckConstraint("retry_count >= 0", name="outbox_message_retry_nonnegative"),
         CheckConstraint("sequence_no >= 0", name="outbox_message_sequence_nonnegative"),
         CheckConstraint(
             "status IN ('PENDING', 'PROCESSING', 'DELIVERED', 'RETRYABLE_FAILED', "
@@ -549,6 +550,7 @@ class OutboxMessageRow(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="PENDING")
     priority: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     lease_owner: Mapped[str | None] = mapped_column(String(255))
     lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

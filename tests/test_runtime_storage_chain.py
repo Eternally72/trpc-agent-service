@@ -45,6 +45,7 @@ from trpc_service.storage.types import (
     MemoryRecord,
     OutboxMessage,
     SessionEvent,
+    SessionSnapshot,
 )
 from trpc_service.tenant.context import TenantContext
 
@@ -124,6 +125,33 @@ def _config(**changes: object) -> AgentRuntimeConfig:
 
 async def _bytes(payload: bytes) -> AsyncIterator[bytes]:
     yield payload
+
+
+class RecordingSessionCache:
+    """Return an exact cached version and record write-through snapshots."""
+
+    def __init__(self, snapshot: SessionSnapshot | None = None) -> None:
+        self.snapshot = snapshot
+        self.expected_versions: list[int] = []
+        self.writes: list[SessionSnapshot] = []
+
+    async def get(
+        self,
+        context: TenantContext,
+        session_id: str,
+        *,
+        expected_version: int,
+    ) -> SessionSnapshot | None:
+        del context, session_id
+        self.expected_versions.append(expected_version)
+        return self.snapshot
+
+    async def put(self, context: TenantContext, snapshot: SessionSnapshot) -> None:
+        del context
+        self.writes.append(snapshot)
+
+    async def close(self) -> None:
+        return None
 
 
 @pytest.mark.anyio
@@ -296,6 +324,33 @@ async def test_context_builder_restores_memory_without_legacy_upload_state() -> 
 
 
 @pytest.mark.anyio
+async def test_context_builder_reads_an_exact_short_term_session_from_cache() -> None:
+    storage = _storage()
+    request = _request()
+    cached = SessionSnapshot(
+        session_id=request.session_id,
+        version=4,
+        events=(SessionEvent(
+            event_id="cached-event",
+            event_type="agent.replied",
+            occurred_at=datetime.now(timezone.utc),
+            payload={"text": "cached reply"},
+        ), ),
+    )
+    cache = RecordingSessionCache(cached)
+
+    context = await StorageContextBuilder(storage, session_cache=cache).build(
+        request,
+        _config(knowledge={"auto_retrieve": False}),
+        PolicyDecision(PolicyAction.ALLOW),
+        AgentExecutionClaim("claim", session_version=4),
+    )
+
+    assert context.session == cached
+    assert cache.expected_versions == [4]
+
+
+@pytest.mark.anyio
 async def test_context_builder_loads_validated_image_artifacts() -> None:
     storage = _storage()
     assert storage.artifact is not None
@@ -455,7 +510,8 @@ async def test_result_committer_preserves_reply_correlation_and_derived_work() -
         category="AUDIT",
         idempotency_key="audit-derived-key",
     )
-    receipt = await StorageResultCommitter(storage).commit(
+    cache = RecordingSessionCache()
+    receipt = await StorageResultCommitter(storage, session_cache=cache).commit(
         context,
         AgentRunResult(
             replies=(
@@ -473,6 +529,7 @@ async def test_result_committer_preserves_reply_correlation_and_derived_work() -
     )
 
     assert receipt.session.state == {"completed": True}
+    assert cache.writes == [receipt.session]
     assert len(receipt.committed_outbox_ids) == 2
     first = await storage.outbox.claim_outbox(
         request.tenant,

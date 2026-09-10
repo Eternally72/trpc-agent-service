@@ -19,7 +19,7 @@ flowchart TB
     WORKER --> MCP[租户 MCP]
     WORKER --> SQL
     WORKER --> S3[(SeaweedFS S3)]
-    GW -. 可选协调 / 缓存 .-> REDIS[(Redis)]
+    WORKER -->|近期 Session 缓存| REDIS[(Redis)]
     SQL --> CHANNEL
     GW -. OTLP .-> OTEL[OTel Collector]
     WORKER -. OTLP .-> OTEL

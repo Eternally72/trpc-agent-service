@@ -127,6 +127,7 @@ class PostgreSQLDeliveryTaskQueue:
             session_id=row.session_id,
             sequence_no=row.sequence_no,
             attempt_count=row.attempt_count,
+            retry_count=row.retry_count,
             payload=row.payload,
         )
 
@@ -194,6 +195,7 @@ class PostgreSQLDeliveryTaskQueue:
             trace_context = {str(key): str(value) for key, value in raw_trace_context.items()}
             row.status = "PROCESSING"
             row.attempt_count += 1
+            row.retry_count += 1
             row.lease_owner = worker_id
             row.lease_until = lease_until
             row.next_attempt_at = None
@@ -345,6 +347,9 @@ class PostgreSQLDeliveryTaskQueue:
             row.lease_until = None
             row.last_error_code = None
             row.last_error_summary = None
+            # Keep attempt_count monotonic because OutboxAttempt rows are an
+            # immutable audit trail. Only the current retry budget is reset.
+            row.retry_count = 0
             return True
 
 
@@ -538,7 +543,7 @@ class DeliveryWorkerService:
                 "tenant.id": str(claim.context.tenant_id),
                 "channel.type": claim.binding.channel_type,
                 "request.id": claim.context.request_id,
-                "retry.count": claim.message.attempt_count - 1,
+                "retry.count": self._retry_count(claim) - 1,
             },
         ) if self._telemetry is not None else None)
         outgoing = outgoing_from_outbox(claim.message)
@@ -576,18 +581,28 @@ class DeliveryWorkerService:
         claim: DeliveryTaskClaim,
         decision: RecoveryDecision,
     ) -> datetime | None:
+        retry_count = self._retry_count(claim)
         if (decision.disposition is not FailureDisposition.RETRY
-                or claim.message.attempt_count >= self._runtime.max_attempts):
+                or retry_count >= self._runtime.max_attempts):
             return None
         delay = self._recovery.retry_delay_seconds(
             operation_key=claim.message.outbox_id,
-            attempt_count=claim.message.attempt_count,
+            attempt_count=retry_count,
             base_seconds=self._runtime.retry_base_seconds,
             maximum_seconds=self._runtime.retry_max_seconds,
             jitter_ratio=self._runtime.retry_jitter_ratio,
             retry_after_seconds=decision.retry_after_seconds,
         )
         return datetime.now(timezone.utc) + timedelta(seconds=delay)
+
+    @staticmethod
+    def _retry_count(claim: DeliveryTaskClaim) -> int:
+        """Support old queue implementations while using the new replay budget."""
+
+        # A claimed production row always has retry_count >= 1. The fallback
+        # keeps custom adapters and rolling-upgrade nodes compatible until they
+        # emit the new field.
+        return claim.message.retry_count or claim.message.attempt_count
 
     def _record_metric(
         self,

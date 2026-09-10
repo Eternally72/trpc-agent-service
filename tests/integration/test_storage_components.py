@@ -24,6 +24,7 @@ from trpc_service.storage import (
     ExecutionCommit,
     InboxClaimRequest,
     KnowledgeDocument,
+    RedisSessionSnapshotCache,
     SessionEvent,
 )
 from trpc_service.storage.adapters.pgvector import PgVectorKnowledgeStore
@@ -259,6 +260,18 @@ async def test_real_storage_components_complete_the_provider_neutral_chain() -> 
     assert await lease_coordinator.release(lease)
     await RedisOutboxNotifier(redis_client,
                               prefix="trpc-integration").notify(context, ["integration-outbox"])
+    session_cache = RedisSessionSnapshotCache(
+        redis_client,
+        ttl_seconds=300,
+        max_events=10,
+        key_prefix="trpc-integration:session",
+    )
+    await session_cache.put(context, snapshot)
+    assert await session_cache.get(
+        context,
+        snapshot.session_id,
+        expected_version=snapshot.version,
+    ) == snapshot
     await redis.aclose()
     await composition.close()
 

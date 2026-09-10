@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     environment: str = "development"
     database_url: str = "postgresql+asyncpg://trpc@postgres:5432/trpc_agent"
     database_password_file: Path | None = None
+    session_cache_url: SecretStr = SecretStr("")
+    session_cache_ttl_seconds: int = Field(default=30 * 60, ge=60, le=24 * 60 * 60)
+    session_cache_max_events: int = Field(default=40, ge=2, le=200)
     api_prefix: str = "/api/v1"
     host: str = "127.0.0.1"
     port: int = 8000
@@ -141,6 +144,20 @@ class Settings(BaseSettings):
         if password == "":
             raise ValueError("database password file is empty")
         return url.set(password=password)
+
+    @property
+    def resolved_session_cache_url(self) -> str | None:
+        """Return an optional Redis URL without exposing it in settings output."""
+
+        value = self.session_cache_url.get_secret_value().strip()
+        if not value:
+            return None
+        parsed = make_url(value)
+        if parsed.drivername not in {"redis", "rediss"}:
+            raise ValueError("Session cache URL must use redis:// or rediss://")
+        if parsed.host is None:
+            raise ValueError("Session cache URL must include a host")
+        return value
 
     @property
     def resolved_admin_bootstrap_token(self) -> str:

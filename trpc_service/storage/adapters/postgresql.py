@@ -197,6 +197,7 @@ class PostgreSQLExecutionStore(SessionStore, OutboxStore):
         return ExecutionClaim(
             inbox_id=str(inbox.inbox_id),
             request_id=inbox.request_id,
+            session_version=snapshot.version,
             replayed=True,
             completed=snapshot,
             committed_outbox_ids=outbox_ids,
@@ -277,6 +278,7 @@ class PostgreSQLExecutionStore(SessionStore, OutboxStore):
                         inbox_id=str(inbox.inbox_id),
                         request_id=inbox.request_id,
                         fencing_token=fencing_token,
+                        session_version=0,
                     )
 
             if inbox.status in {"SUCCEEDED", "REPLIED"}:
@@ -312,6 +314,12 @@ class PostgreSQLExecutionStore(SessionStore, OutboxStore):
             inbox.started_at = now
             inbox.last_error_code = None
             inbox.last_error_summary = None
+            session_version = await database.scalar(
+                select(AgentSession.version).where(
+                    AgentSession.tenant_id == context.tenant_id,
+                    AgentSession.agent_app_id == context.agent_app_id,
+                    AgentSession.session_id == request.session_id,
+                ))
             runner = await database.scalar(
                 select(RunnerRequestRow).where(
                     RunnerRequestRow.tenant_id == context.tenant_id,
@@ -327,6 +335,7 @@ class PostgreSQLExecutionStore(SessionStore, OutboxStore):
                 inbox_id=str(inbox.inbox_id),
                 request_id=inbox.request_id,
                 fencing_token=fencing_token,
+                session_version=session_version or 0,
             )
 
     async def renew_execution(
@@ -582,6 +591,7 @@ class PostgreSQLExecutionStore(SessionStore, OutboxStore):
             session_id=row.session_id,
             sequence_no=row.sequence_no,
             attempt_count=row.attempt_count,
+            retry_count=row.retry_count,
             payload=row.payload,
         )
 
@@ -614,6 +624,7 @@ class PostgreSQLExecutionStore(SessionStore, OutboxStore):
                 return None
             row.status = "PROCESSING"
             row.attempt_count += 1
+            row.retry_count += 1
             row.lease_owner = worker_id
             row.lease_until = lease_until
             database.add(

@@ -76,6 +76,7 @@ class _InMemoryOutbox:
     next_attempt_at: datetime | None = None
     external_receipt_id: str | None = None
     attempt_count: int = 0
+    retry_count: int = 0
 
 
 @dataclass(slots=True)
@@ -174,6 +175,10 @@ class InMemorySessionStore(_ScopedAdapter, SessionStore, OutboxStore):
                     inbox_id=inbox.inbox_id,
                     request_id=inbox.request_id,
                     fencing_token=fencing_token,
+                    session_version=self._state.sessions.get(
+                        self._session_key(context, request.session_id),
+                        SessionSnapshot(session_id=request.session_id, version=0),
+                    ).version,
                 )
             if inbox.request.payload_hash != request.payload_hash:
                 raise IdempotencyConflict("external message ID was reused with a different payload")
@@ -182,6 +187,7 @@ class InMemorySessionStore(_ScopedAdapter, SessionStore, OutboxStore):
                 return ExecutionClaim(
                     inbox_id=inbox.inbox_id,
                     request_id=inbox.request_id,
+                    session_version=inbox.snapshot.version,
                     replayed=True,
                     completed=inbox.snapshot,
                     committed_outbox_ids=inbox.outbox_ids,
@@ -209,6 +215,10 @@ class InMemorySessionStore(_ScopedAdapter, SessionStore, OutboxStore):
                 inbox_id=inbox.inbox_id,
                 request_id=inbox.request_id,
                 fencing_token=fencing_token,
+                session_version=self._state.sessions.get(
+                    self._session_key(context, request.session_id),
+                    SessionSnapshot(session_id=request.session_id, version=0),
+                ).version,
             )
 
     async def renew_execution(
@@ -388,6 +398,7 @@ class InMemorySessionStore(_ScopedAdapter, SessionStore, OutboxStore):
             row.lease_until = lease_until
             row.next_attempt_at = None
             row.attempt_count += 1
+            row.retry_count += 1
             return OutboxMessage(
                 outbox_id=row.message.outbox_id,
                 category=row.message.category,
@@ -398,6 +409,7 @@ class InMemorySessionStore(_ScopedAdapter, SessionStore, OutboxStore):
                 session_id=row.message.session_id,
                 sequence_no=row.message.sequence_no,
                 attempt_count=row.attempt_count,
+                retry_count=row.retry_count,
                 payload=row.message.payload,
             )
 

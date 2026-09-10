@@ -8,6 +8,7 @@ import pytest
 from pydantic import SecretStr
 from trpc_agent_sdk.events import Event
 from trpc_agent_sdk.runners import RunConfig
+from trpc_agent_sdk.sessions import InMemorySessionService
 from trpc_agent_sdk.types import Content, GenerateContentResponseUsageMetadata, Part
 
 from trpc_service.agent import (
@@ -104,6 +105,29 @@ class EmptySDKRunner:
         del user_id, session_id, new_message, run_config
         if False:
             yield Event(author="assistant")
+
+
+class AmbiguitySensitiveSDKRunner:
+    """Model double that exposes prior-history/current-turn role ambiguity."""
+
+    async def run_async(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        new_message: Content | list[Content],
+        run_config: RunConfig,
+    ) -> AsyncIterator[Event]:
+        del user_id, session_id, run_config
+        # Passing the transcript and the current question as a list makes the
+        # SDK merge two consecutive user-role entries. This deterministic
+        # double models the observed failure: the old answer wins because the
+        # current question is no longer a distinct conversation turn.
+        text = "上一轮回复" if isinstance(new_message, list) else "当前问题回复"
+        yield Event(
+            author="assistant",
+            content=Content(role="model", parts=[Part.from_text(text=text)]),
+        )
 
 
 class UnusedToolInvoker(AgentToolInvoker):
@@ -231,10 +255,54 @@ async def test_trpc_agent_runner_rehydrates_shared_session_history() -> None:
         ),
     )
 
-    await TRPCAgentRunner(sdk_runner).run(context, UnusedToolInvoker())
+    sessions = InMemorySessionService()
+    await TRPCAgentRunner(sdk_runner, sessions).run(context, UnusedToolInvoker())
 
-    assert "用户: 我叫小白" in sdk_runner.shared_context
-    assert "助手: 你好，小白" in sdk_runner.shared_context
+    session = await sessions.get_session(
+        app_name="trpc-agent-service",
+        user_id=sdk_runner.user_id,
+        session_id=sdk_runner.session_id,
+    )
+    assert session is not None
+    assert [(event.content.role, event.get_text()) for event in session.events] == [
+        ("user", "我叫小白"),
+        ("model", "你好，小白"),
+    ]
+
+
+@pytest.mark.anyio
+async def test_trpc_agent_runner_does_not_answer_the_previous_turn_again() -> None:
+    """Durable history must not be merged into the current user turn."""
+
+    context = _context()
+    context = replace(
+        context,
+        session=SessionSnapshot(
+            session_id=context.request.session_id,
+            version=2,
+            events=(
+                SessionEvent(
+                    event_id="event-previous-user",
+                    event_type="message.received",
+                    occurred_at=datetime.now(timezone.utc),
+                    payload={"text": "上一个问题"},
+                ),
+                SessionEvent(
+                    event_id="event-previous-agent",
+                    event_type="agent.replied",
+                    occurred_at=datetime.now(timezone.utc),
+                    payload={"text": "上一轮回复"},
+                ),
+            ),
+        ),
+    )
+
+    result = await TRPCAgentRunner(AmbiguitySensitiveSDKRunner()).run(
+        context,
+        UnusedToolInvoker(),
+    )
+
+    assert result.replies[0].text == "当前问题回复"
 
 
 @pytest.mark.anyio
@@ -264,9 +332,10 @@ async def test_trpc_agent_runner_injects_citable_tenant_knowledge() -> None:
 
     await TRPCAgentRunner(sdk_runner).run(context, UnusedToolInvoker())
 
-    assert "[知识1] 员工每年享有十二天年假。" in sdk_runner.shared_context
-    assert "来源：leave-policy.md，第 2 版" in sdk_runner.shared_context
-    assert "回答中使用知识时请标注 [知识序号]" in sdk_runner.shared_context
+    assert "[知识1] 员工每年享有十二天年假。" in sdk_runner.message
+    assert "来源：leave-policy.md，第 2 版" in sdk_runner.message
+    assert "回答中使用知识时请标注 [知识序号]" in sdk_runner.message
+    assert "当前用户请求：\n用户消息" in sdk_runner.message
     assert "knowledge_list 或 knowledge_search" in sdk_runner.message
 
 

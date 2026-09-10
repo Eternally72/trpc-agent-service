@@ -32,6 +32,10 @@ from trpc_service.storage.router import (
     StorageCapabilityMissing,
     StorageRouter,
 )
+from trpc_service.storage.session_cache import (
+    RedisSessionSnapshotCache,
+    SessionSnapshotCache,
+)
 from trpc_service.storage.types import (
     ArtifactMetadata,
     ArtifactRef,
@@ -73,8 +77,10 @@ __all__ = [
     "OutboxMessage",
     "OutboxStore",
     "ResolvedStorage",
+    "RedisSessionSnapshotCache",
     "SessionEvent",
     "SessionSnapshot",
+    "SessionSnapshotCache",
     "SessionSummary",
     "SessionStore",
     "SessionVersionConflict",

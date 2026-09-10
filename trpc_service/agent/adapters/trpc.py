@@ -7,6 +7,7 @@ from typing import Protocol
 from uuid import uuid4
 
 from trpc_agent_sdk.events import Event
+from trpc_agent_sdk.abc import SessionServiceABC
 from trpc_agent_sdk.runners import RunConfig
 from trpc_agent_sdk.types import Content, Part
 
@@ -40,22 +41,22 @@ class TRPCRunner(Protocol):
 class TRPCAgentRunner(AgentRunner):
     """Translate platform execution values to and from the tRPC-Agent SDK."""
 
-    def __init__(self, runner: TRPCRunner) -> None:
+    def __init__(
+        self,
+        runner: TRPCRunner,
+        session_service: SessionServiceABC | None = None,
+        *,
+        app_name: str = "trpc-agent-service",
+    ) -> None:
         self._runner = runner
+        self._session_service = session_service
+        self._app_name = app_name
 
     @staticmethod
     def _shared_context(context: AgentExecutionContext) -> Content | None:
         """Convert durable Session and Memory facts into model-visible context."""
 
         lines: list[str] = []
-        if context.session is not None:
-            # Bound replay size independently of the concrete Session backend.
-            for event in context.session.events[-40:]:
-                text = event.payload.get("text")
-                if not isinstance(text, str) or text.strip() == "":
-                    continue
-                role = "用户" if event.event_type == "message.received" else "助手"
-                lines.append(f"{role}: {text}")
         if context.memories:
             lines.append("与当前用户相关的长期记忆：")
             lines.extend(f"- {hit.record.content}" for hit in context.memories[:10])
@@ -69,13 +70,56 @@ class TRPCAgentRunner(AgentRunner):
             lines.append("回答中使用知识时请标注 [知识序号]；知识不足时应明确说明。")
         if not lines:
             return None
-        # This is a prior history item, not part of the new user message. The
-        # request-scoped SDK Session may be in-memory because shared storage is
-        # rehydrated on every Worker invocation.
         return Content(
             role="user",
-            parts=[Part.from_text(text="以下是平台共享存储中的既有上下文：\n" + "\n".join(lines))],
+            parts=[Part.from_text(text="以下是本轮可参考的补充资料：\n" + "\n".join(lines))],
         )
+
+    async def _hydrate_session(
+        self,
+        context: AgentExecutionContext,
+        *,
+        user_id: str,
+        session_id: str,
+    ) -> None:
+        """Restore durable turns as real SDK user/model history entries."""
+
+        if self._session_service is None or context.session is None:
+            return
+        session = await self._session_service.get_session(
+            app_name=self._app_name,
+            user_id=user_id,
+            session_id=session_id,
+        )
+        if session is not None:
+            return
+        session = await self._session_service.create_session(
+            app_name=self._app_name,
+            user_id=user_id,
+            session_id=session_id,
+        )
+        # The platform cache already bounds recent events. Keep a second
+        # adapter-side bound for alternate durable Session implementations.
+        for event in context.session.events[-40:]:
+            text = event.payload.get("text")
+            if not isinstance(text, str) or not text.strip():
+                continue
+            if event.event_type == "message.received":
+                author, role = "user", "user"
+            elif event.event_type == "agent.replied":
+                author, role = "assistant", "model"
+            else:
+                continue
+            await self._session_service.append_event(
+                session,
+                Event(
+                    id=event.event_id,
+                    invocation_id=event.event_id,
+                    author=author,
+                    timestamp=event.occurred_at.timestamp(),
+                    content=Content(role=role, parts=[Part.from_text(text=text)]),
+                ),
+            )
 
     async def close(self) -> None:
         """Release SDK-owned sessions and background resources when available."""
@@ -161,14 +205,21 @@ class TRPCAgentRunner(AgentRunner):
             for artifact in context.input_artifacts)
         content = Content(role="user", parts=parts)
         shared_context = self._shared_context(context)
-        new_message: Content | list[Content] = (content if shared_context is None else
-                                                [shared_context, content])
+        if shared_context is not None:
+            supplemental = shared_context.parts[0].text or ""
+            current = content.parts[0].text or ""
+            content.parts[0].text = f"{supplemental}\n\n当前用户请求：\n{current}"
+        await self._hydrate_session(
+            context,
+            user_id=scoped_user_id,
+            session_id=scoped_session_id,
+        )
         final_text = ""
         usage = AgentUsage()
         async for event in self._runner.run_async(
                 user_id=scoped_user_id,
                 session_id=scoped_session_id,
-                new_message=new_message,
+                new_message=content,
                 run_config=RunConfig(save_history_enabled=True),
         ):
             if event.is_error():

@@ -44,6 +44,7 @@ from trpc_service.storage.adapters.postgresql_runner_recovery import PostgreSQLR
 from trpc_service.storage.registry import StorageBackendRegistry
 from trpc_service.storage.router import BackendProfile, StorageRouter
 from trpc_service.storage.knowledge import TenantKnowledgeService
+from trpc_service.storage.session_cache import RedisSessionSnapshotCache, SessionSnapshotCache
 from trpc_service.workspace import LocalWorkspaceProvider, WorkspaceProvider
 
 
@@ -75,6 +76,7 @@ class ApplicationContainer:
     workspace: WorkspaceProvider
     mcp: TenantMCPService
     skills: BuiltinSkillCatalog
+    session_cache: SessionSnapshotCache | None
 
     async def start(self) -> None:
         """Start local Worker slots when this process owns an execution role."""
@@ -114,6 +116,8 @@ class ApplicationContainer:
         close = getattr(self.agent_runner, "close", None)
         if close is not None:
             await close()
+        if self.session_cache is not None:
+            await self.session_cache.close()
         self.telemetry.shutdown()
 
 
@@ -171,6 +175,13 @@ def build_application_container(
         mcp=mcp,
         skills=skills,
     )
+    cache_url = app_settings.resolved_session_cache_url
+    session_cache = (RedisSessionSnapshotCache.from_url(
+        cache_url,
+        ttl_seconds=app_settings.session_cache_ttl_seconds,
+        max_events=app_settings.session_cache_max_events,
+    ) if agent_pipeline is None and app_settings.worker_concurrency > 0 and cache_url is not None
+                     else None)
     approvals = ApprovalService(
         PostgreSQLApprovalStore(session_factory),
         ttl_seconds=app_settings.approval_ttl_seconds,
@@ -197,6 +208,7 @@ def build_application_container(
         tool_ledger=PostgreSQLToolLedger(session_factory),
         workspace_provider=workspace,
         mcp_service=mcp,
+        session_cache=session_cache,
     )
     task_queue = PostgreSQLAgentTaskQueue(session_factory)
     workers = (None if app_settings.worker_concurrency == 0 else AgentWorkerService(
@@ -295,4 +307,5 @@ def build_application_container(
         workspace=workspace,
         mcp=mcp,
         skills=skills,
+        session_cache=session_cache,
     )

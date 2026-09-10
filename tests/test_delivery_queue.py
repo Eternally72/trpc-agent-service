@@ -130,5 +130,6 @@ async def test_delivery_queue_leases_completes_and_manually_replays_dlq(tmp_path
     assert replay is not None
     assert replay.message.outbox_id == "reply-dlq"
     assert replay.message.attempt_count == 2
+    assert replay.message.retry_count == 1
     assert not await queue.replay(tenant_id, "missing")
     await engine.dispose()

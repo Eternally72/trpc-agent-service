@@ -81,6 +81,16 @@ def test_storage_url_rejects_an_embedded_plaintext_password() -> None:
         )
 
 
+def test_session_cache_url_accepts_redis_and_rejects_other_schemes() -> None:
+    settings = Settings(session_cache_url="redis://cache.internal:6379/2")
+
+    assert settings.resolved_session_cache_url == "redis://cache.internal:6379/2"
+    with pytest.raises(ValueError, match="redis"):
+        Settings(session_cache_url="postgresql://database/session").resolved_session_cache_url
+    with pytest.raises(ValueError, match="host"):
+        Settings(session_cache_url="redis:///0").resolved_session_cache_url
+
+
 def test_s3_backend_rejects_partial_static_credentials() -> None:
     with pytest.raises(ValidationError):
         S3BackendConfig(

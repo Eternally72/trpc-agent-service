@@ -184,6 +184,7 @@ class AgentExecutionClaim:
     claim_id: str
     request_id: str | None = None
     fencing_token: int | None = None
+    session_version: int | None = None
     completed: AgentExecutionReceipt | None = None
     request: AgentExecutionRequest | None = None
     runtime_config: AgentRuntimeConfig | None = None
@@ -193,6 +194,8 @@ class AgentExecutionClaim:
             raise ValueError("execution claim id cannot be empty")
         if self.fencing_token is not None and self.fencing_token < 1:
             raise ValueError("execution fencing token must be positive")
+        if self.session_version is not None and self.session_version < 0:
+            raise ValueError("claimed Session version cannot be negative")
 
 
 @dataclass(frozen=True, slots=True)

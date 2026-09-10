@@ -1,5 +1,6 @@
 """Stable public error models and FastAPI exception handlers."""
 
+import logging
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -7,6 +8,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
+
+logger = logging.getLogger(__name__)
 
 
 class ErrorDetail(BaseModel):
@@ -63,5 +66,26 @@ def install_exception_handlers(app: FastAPI) -> None:
                 code="validation_error",
                 message="request validation failed",
                 details=details,
+            ),
+        )
+
+    @app.exception_handler(Exception)
+    async def handle_unexpected_error(request: Request, error: Exception) -> JSONResponse:
+        """Log diagnostics server-side and expose only a stable, safe 500 response."""
+
+        # Exception messages may contain provider payloads or credentials.
+        # The trace_id from request logging is enough to correlate deeper
+        # component diagnostics without repeating an unsafe message here.
+        logger.error(
+            "Unhandled API error method=%s path=%s error_type=%s",
+            request.method,
+            request.url.path,
+            type(error).__name__,
+        )
+        return _error_response(
+            500,
+            ErrorDetail(
+                code="internal_error",
+                message="internal server error",
             ),
         )

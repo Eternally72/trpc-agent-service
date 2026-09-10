@@ -1,5 +1,9 @@
 import httpx
 import pytest
+from pytest import LogCaptureFixture
+from fastapi import FastAPI
+
+from trpc_service.web.errors import install_exception_handlers
 
 
 @pytest.mark.anyio
@@ -24,3 +28,29 @@ async def test_validation_errors_do_not_echo_request_values(api_client: httpx.As
     assert body["error"]["code"] == "validation_error"
     assert body["error"]["message"] == "request validation failed"
     assert "not-a-uuid" not in response.text
+
+
+@pytest.mark.anyio
+async def test_unhandled_exception_uses_safe_public_error_contract(
+        caplog: LogCaptureFixture) -> None:
+    app = FastAPI()
+    install_exception_handlers(app)
+
+    @app.get("/explode")
+    async def explode() -> None:
+        raise RuntimeError("private database and credential details")
+
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/explode")
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "error": {
+            "code": "internal_error",
+            "message": "internal server error",
+        }
+    }
+    assert "private database" not in response.text
+    assert "private database" not in caplog.text
+    assert "RuntimeError" in caplog.text

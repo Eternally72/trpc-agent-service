@@ -28,14 +28,17 @@ class OutboxMessage:
     request_id: str | None = None
     session_id: str | None = None
     sequence_no: int = 0
+    # attempt_count is monotonic because it identifies immutable audit rows;
+    # retry_count is the resettable budget for the current delivery cycle.
     attempt_count: int = 0
+    retry_count: int = 0
     payload: Mapping[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.outbox_id.strip() or not self.category.strip(
         ) or not self.idempotency_key.strip():
             raise ValueError("Outbox identifiers and category cannot be empty")
-        if self.sequence_no < 0 or self.attempt_count < 0:
+        if self.sequence_no < 0 or self.attempt_count < 0 or self.retry_count < 0:
             raise ValueError("Outbox sequence and attempt counts cannot be negative")
 
 
@@ -97,6 +100,7 @@ class ExecutionClaim:
     inbox_id: str
     request_id: str
     fencing_token: int | None = None
+    session_version: int | None = None
     replayed: bool = False
     completed: SessionSnapshot | None = None
     committed_outbox_ids: tuple[str, ...] = ()
@@ -104,6 +108,8 @@ class ExecutionClaim:
     def __post_init__(self) -> None:
         if self.fencing_token is not None and self.fencing_token < 1:
             raise ValueError("execution fencing token must be positive")
+        if self.session_version is not None and self.session_version < 0:
+            raise ValueError("claimed Session version cannot be negative")
 
 
 @dataclass(frozen=True, slots=True)
