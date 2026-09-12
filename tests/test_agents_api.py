@@ -142,6 +142,15 @@ async def test_agent_rejects_malformed_capability_policy_before_runtime(
         },
         {
             "grants": [{
+                "kind": "mcp",
+                "name": "x",
+                "actions": ["execute"],
+                "resources": ["12345678-1234-5678-1234-567812345678"],
+                "risk_level": 0,
+            }]
+        },
+        {
+            "grants": [{
                 "kind": "tool",
                 "name": "x",
                 "actions": ["execute"],

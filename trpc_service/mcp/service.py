@@ -2,6 +2,7 @@
 
 import asyncio
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import ipaddress
 import json
@@ -208,6 +209,31 @@ class GovernedMCPTool(BaseTool):  # type: ignore[misc]
         return {"result": result.content or ""}
 
 
+def _canonical_mcp_context(
+    context: AgentExecutionContext,
+    connection_id: UUID,
+    tool_name: str,
+) -> AgentExecutionContext:
+    """Enforce platform MCP risk even for snapshots saved by older releases."""
+
+    raw_grants = context.config.tools.get("grants", ())
+    if not isinstance(raw_grants, Sequence) or isinstance(raw_grants, (str, bytes)):
+        return context
+    normalized: list[object] = []
+    for raw_grant in raw_grants:
+        if not isinstance(raw_grant, Mapping):
+            normalized.append(raw_grant)
+            continue
+        resources = raw_grant.get("resources", ())
+        matches = (raw_grant.get("kind") == "mcp" and raw_grant.get("name") == tool_name
+                   and isinstance(resources, Sequence) and not isinstance(resources, (str, bytes))
+                   and str(connection_id) in {str(resource)
+                                              for resource in resources})
+        normalized.append({**raw_grant, "risk_level": 2} if matches else dict(raw_grant))
+    tools = {**context.config.tools, "grants": normalized}
+    return replace(context, config=replace(context.config, tools=tools))
+
+
 class TenantMCPService(AgentToolInvoker):
     """Discover and invoke remote tools without crossing tenant configuration."""
 
@@ -392,7 +418,7 @@ class TenantMCPService(AgentToolInvoker):
         raw_grants = context.config.tools.get("grants", ())
         if not isinstance(raw_grants, Sequence) or isinstance(raw_grants, (str, bytes)):
             return []
-        requested: dict[UUID, dict[str, int]] = {}
+        requested: dict[UUID, set[str]] = {}
         for raw_grant in raw_grants:
             if not isinstance(raw_grant, Mapping) or raw_grant.get("kind") != "mcp":
                 continue
@@ -403,14 +429,15 @@ class TenantMCPService(AgentToolInvoker):
             if (not isinstance(name, str) or not isinstance(actions, Sequence)
                     or isinstance(actions, (str, bytes)) or "execute" not in actions
                     or not isinstance(resources, Sequence) or isinstance(resources, (str, bytes))
-                    or isinstance(risk_level, bool) or not isinstance(risk_level, int)):
+                    or isinstance(risk_level, bool) or not isinstance(risk_level, int)
+                    or risk_level not in range(4)):
                 continue
             for raw_resource in resources:
                 try:
                     connection_id = UUID(str(raw_resource))
                 except ValueError:
                     continue
-                requested.setdefault(connection_id, {})[name] = risk_level
+                requested.setdefault(connection_id, set()).add(name)
         if not requested:
             return []
         async with self._sessions() as database:
@@ -428,12 +455,20 @@ class TenantMCPService(AgentToolInvoker):
                 # Risk is a platform policy, not a remote-server assertion. The
                 # minimum also protects databases containing pre-policy catalogs.
                 effective_risk = 2
-                if not isinstance(entry_name, str) or allowed.get(entry_name) != effective_risk:
+                if not isinstance(entry_name, str) or entry_name not in allowed:
                     continue
                 safe_entry = {**entry, "risk_level": effective_risk}
                 tools.append(
                     GovernedMCPTool(
-                        context=context,
+                        # Old released snapshots may contain a provider-derived
+                        # risk of zero. The explicit tenant grant remains valid,
+                        # but every MCP execution is upgraded to the platform's
+                        # confirmation-required risk before governance sees it.
+                        context=_canonical_mcp_context(
+                            context,
+                            row.connection_id,
+                            entry_name,
+                        ),
                         invoker=invoker,
                         sequence=sequence,
                         connection_id=row.connection_id,

@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 import httpx
 import pytest
 
@@ -5,6 +8,40 @@ from trpc_service.config import Settings
 from trpc_service.metrics import PlatformTelemetry
 from trpc_service.metrics import telemetry as telemetry_module
 from trpc_service.web import create_app
+
+
+def test_grafana_dashboard_keeps_sparse_tool_calls_visible() -> None:
+    dashboard_path = (Path(__file__).parents[1] / "trpc_service" / "config" / "observability" /
+                      "grafana" / "dashboards" / "agent-platform.json")
+    dashboard = json.loads(dashboard_path.read_text(encoding="utf-8"))
+    panels = {panel["title"]: panel for panel in dashboard["panels"]}
+
+    assert {
+        "核心健康状态",
+        "Agent 与模型",
+        "Tool、MCP 与治理",
+        "通道与基础设施",
+    }.issubset(panels)
+    assert all(panels[title]["type"] == "row" for title in {
+        "核心健康状态",
+        "Agent 与模型",
+        "Tool、MCP 与治理",
+        "通道与基础设施",
+    })
+    assert "Tool 调用明细（当前时间范围）" in panels
+    tool_expressions = [target["expr"] for target in panels["Tool 调用明细（当前时间范围）"]["targets"]]
+    assert any("increase(trpc_tool_calls_total[$__range])" in expr for expr in tool_expressions)
+    assert all("[5m]" not in expr for expr in tool_expressions)
+    success_expression = panels["请求成功率"]["targets"][0]["expr"]
+    assert "or vector(0)" in success_expression
+    assert {
+        "请求成功率",
+        "当前执行中",
+        "Tool 调用总数",
+        "Tool P95 延迟",
+        "模型 Token 消耗",
+        "IM 投递结果",
+    }.issubset(panels)
 
 
 def test_platform_metrics_expose_low_cardinality_governance_and_agent_results() -> None:

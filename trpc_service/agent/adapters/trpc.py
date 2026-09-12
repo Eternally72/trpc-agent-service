@@ -223,6 +223,15 @@ class TRPCAgentRunner(AgentRunner):
                 run_config=RunConfig(save_history_enabled=True),
         ):
             if event.is_error():
+                # The SDK emits Tool errors as model-visible function responses
+                # and then lets the model correct its call. Do not abort that
+                # recovery loop; provider/model errors without a Tool response
+                # remain fatal and fail closed below.
+                recoverable_tool_error = (event.error_code
+                                          in {"tool_not_found", "tool_execution_error"}
+                                          and bool(event.get_function_responses()))
+                if recoverable_tool_error:
+                    continue
                 raise RuntimeError(f"tRPC Agent execution failed: {event.error_code or 'unknown'}")
             if event.is_final_response():
                 final_text = event.get_text()

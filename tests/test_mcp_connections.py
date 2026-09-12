@@ -31,6 +31,7 @@ from trpc_service.mcp.service import (
     _TRPCMCPToolset,
     _default_toolset_factory,
     _exposed_tool_name,
+    _canonical_mcp_context,
     _public_addresses,
     _risk_level,
 )
@@ -220,6 +221,114 @@ def _execution_context(
     )
 
 
+def test_mcp_context_upgrades_legacy_grant_to_platform_risk() -> None:
+    tenant_id = uuid4()
+    connection_id = uuid4()
+    exposed_name = "mcp_legacy_search_repositories"
+    context = _execution_context(tenant_id, connection_id, exposed_name)
+    legacy = replace(
+        context,
+        config=replace(
+            context.config,
+            tools={
+                "grants": [{
+                    "kind": "mcp",
+                    "name": exposed_name,
+                    "actions": ["execute"],
+                    "resources": [str(connection_id)],
+                    "risk_level": 0,
+                }]
+            },
+        ),
+    )
+
+    canonical = _canonical_mcp_context(legacy, connection_id, exposed_name)
+
+    assert canonical.config.tools["grants"][0]["risk_level"] == 2  # type: ignore[index]
+    assert legacy.config.tools["grants"][0]["risk_level"] == 0  # type: ignore[index]
+
+
+@pytest.mark.anyio
+async def test_mcp_tools_keep_explicit_legacy_grants_visible() -> None:
+    tenant_id = uuid4()
+    connection_id = uuid4()
+    exposed_name = "mcp_legacy_search_repositories"
+    context = _execution_context(tenant_id, connection_id, exposed_name)
+    context = replace(
+        context,
+        config=replace(
+            context.config,
+            tools={
+                "grants": [{
+                    "kind": "mcp",
+                    "name": exposed_name,
+                    "actions": ["execute"],
+                    "resources": [str(connection_id)],
+                    "risk_level": 0,
+                }]
+            },
+        ),
+    )
+    connection = MCPConnection(
+        connection_id=connection_id,
+        tenant_id=tenant_id,
+        name="Legacy GitHub",
+        endpoint_url="https://mcp.example.com/api",
+        auth_type="none",
+        status="active",
+        tool_catalog=[{
+            "name": exposed_name,
+            "remote_name": "search_repositories",
+            "description": "Search repositories",
+            "input_schema": {
+                "type": "object",
+                "properties": {}
+            },
+            "risk_level": 2,
+        }],
+    )
+
+    class _Rows:
+
+        def all(self) -> list[MCPConnection]:
+            return [connection]
+
+    class _Database:
+
+        async def __aenter__(self) -> "_Database":
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        async def scalars(self, _: object) -> _Rows:
+            return _Rows()
+
+    class _Sessions:
+
+        def __call__(self) -> _Database:
+            return _Database()
+
+    service = TenantMCPService(
+        _Sessions(),  # type: ignore[arg-type]
+        None,  # type: ignore[arg-type]
+        resolve_host=lambda _: ("8.8.8.8", ),
+    )
+
+    visible = await service.tools_for(
+        context,
+        GovernedToolInvoker(service),
+        CapabilityCallSequence(),
+    )
+
+    assert [tool.name for tool in visible] == [exposed_name]
+    with pytest.raises(ToolApprovalRequired, match="trusted approval"):
+        await visible[0]._run_async_impl(  # pylint: disable=protected-access
+            tool_context=None,  # type: ignore[arg-type]
+            args={"query": "user:Eternally72"},
+        )
+
+
 @pytest.mark.anyio
 async def test_mcp_service_discovers_and_invokes_tenant_tool_through_public_port(
     api_client: httpx.AsyncClient, ) -> None:
@@ -278,7 +387,20 @@ async def test_mcp_service_discovers_and_invokes_tenant_tool_through_public_port
             },
         ),
     )
-    assert await service.tools_for(downgraded, service, CapabilityCallSequence()) == []
+    # Configurations saved before MCP risk normalization may still contain a
+    # provider-derived risk of zero. The platform must keep those explicit
+    # grants usable while enforcing its canonical approval risk at runtime.
+    legacy_visible = await service.tools_for(
+        downgraded,
+        GovernedToolInvoker(service),
+        CapabilityCallSequence(),
+    )
+    assert [tool.name for tool in legacy_visible] == [exposed_name]
+    with pytest.raises(ToolApprovalRequired, match="trusted approval"):
+        await legacy_visible[0]._run_async_impl(  # pylint: disable=protected-access
+            tool_context=None,  # type: ignore[arg-type]
+            args={"path": "README.md"},
+        )
 
     governed_context = replace(
         context,

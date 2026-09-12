@@ -92,6 +92,37 @@ class ErrorSDKRunner:
         yield Event(author="assistant", errorCode="MODEL_ERROR")
 
 
+class RecoverableToolErrorSDKRunner:
+    """Model an SDK tool miss followed by the model's corrected response."""
+
+    async def run_async(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        new_message: Content | list[Content],
+        run_config: RunConfig,
+    ) -> AsyncIterator[Event]:
+        del user_id, session_id, new_message, run_config
+        response = Part.from_function_response(
+            name="invented_tool",
+            response={
+                "error": "tool_not_found",
+                "status": "failed"
+            },
+        )
+        yield Event(
+            author="assistant",
+            content=Content(role="user", parts=[response]),
+            errorCode="tool_not_found",
+            errorMessage="Tool 'invented_tool' not found",
+        )
+        yield Event(
+            author="assistant",
+            content=Content(role="model", parts=[Part.from_text(text="该工具不可用，请换一种查询方式。")]),
+        )
+
+
 class EmptySDKRunner:
 
     async def run_async(
@@ -422,6 +453,16 @@ async def test_trpc_agent_runner_fails_closed_on_invalid_or_empty_model_output()
         await TRPCAgentRunner(ErrorSDKRunner()).run(context, UnusedToolInvoker())
     with pytest.raises(RuntimeError, match="no final text"):
         await TRPCAgentRunner(EmptySDKRunner()).run(context, UnusedToolInvoker())
+
+
+@pytest.mark.anyio
+async def test_trpc_agent_runner_allows_sdk_to_recover_from_tool_errors() -> None:
+    result = await TRPCAgentRunner(RecoverableToolErrorSDKRunner()).run(
+        _context(),
+        UnusedToolInvoker(),
+    )
+
+    assert result.replies[0].text == "该工具不可用，请换一种查询方式。"
 
 
 @pytest.mark.anyio
