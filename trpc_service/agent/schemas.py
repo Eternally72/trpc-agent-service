@@ -63,10 +63,11 @@ def validate_tool_permissions(value: dict[str, Any]) -> dict[str, Any]:
         if isinstance(risk_level,
                       bool) or not isinstance(risk_level, int) or risk_level not in range(4):
             raise ValueError("capability risk_level must be an integer from 0 to 3")
-        if kind == "mcp" and risk_level != 2:
-            # Tenant MCP servers are not platform-reviewed, so provider hints
-            # and API clients cannot downgrade the mandatory approval level.
-            raise ValueError("MCP capability risk_level must be 2")
+        if kind == "mcp" and risk_level not in {0, 2}:
+            # MCP has two interaction classes: direct read and confirmed write.
+            # Runtime recomputes the effective class from the refreshed catalog,
+            # so clients cannot downgrade a mutating Tool by editing this value.
+            raise ValueError("MCP capability risk_level must be 0 or 2")
     return validated
 
 

@@ -36,6 +36,7 @@ from trpc_service.mcp.models import MCPConnection
 class RemoteMCPTool(Protocol):
     name: str
     description: str
+    annotations: Mapping[str, object]
 
     def declaration(self) -> dict[str, object]:
         ...
@@ -84,6 +85,18 @@ class _TRPCMCPTool:
         self._tool = tool
         self.name = str(getattr(tool, "name"))
         self.description = str(getattr(tool, "description", ""))
+        mcp_tool = getattr(tool, "_mcp_tool", None)
+        raw_annotations = getattr(mcp_tool, "annotations", None)
+        if raw_annotations is None:
+            self.annotations: Mapping[str, object] = {}
+        elif isinstance(raw_annotations, Mapping):
+            self.annotations = dict(raw_annotations)
+        else:
+            dump = getattr(raw_annotations, "model_dump", None)
+            self.annotations = (cast(
+                dict[str, object],
+                dump(mode="json", by_alias=True, exclude_none=True),
+            ) if callable(dump) else {})
 
     def declaration(self) -> dict[str, object]:
         declaration = self._tool._get_declaration()  # type: ignore[attr-defined]
@@ -134,13 +147,13 @@ def _default_toolset_factory(
 
 
 def _risk_level(tool: RemoteMCPTool) -> int:
-    """Treat every tenant MCP Tool as an unreviewed external side effect."""
+    """Allow explicitly granted, provider-declared reads without a second prompt."""
 
-    # MCP annotations are asserted by the remote server itself. They are useful
-    # descriptions, but cannot lower platform policy without a future explicit
-    # platform review workflow.
-    del tool
-    return 2
+    # Missing or malformed annotations fail closed. A readOnlyHint only changes
+    # interaction risk after the tenant administrator has explicitly connected
+    # the server and granted this exact Tool to the Agent.
+    annotations = getattr(tool, "annotations", {})
+    return 0 if isinstance(annotations, Mapping) and annotations.get("readOnlyHint") is True else 2
 
 
 class GovernedMCPTool(BaseTool):  # type: ignore[misc]
@@ -213,8 +226,9 @@ def _canonical_mcp_context(
     context: AgentExecutionContext,
     connection_id: UUID,
     tool_name: str,
+    risk_level: int,
 ) -> AgentExecutionContext:
-    """Enforce platform MCP risk even for snapshots saved by older releases."""
+    """Apply the refreshed MCP catalog risk to an immutable Agent snapshot."""
 
     raw_grants = context.config.tools.get("grants", ())
     if not isinstance(raw_grants, Sequence) or isinstance(raw_grants, (str, bytes)):
@@ -229,7 +243,7 @@ def _canonical_mcp_context(
                    and isinstance(resources, Sequence) and not isinstance(resources, (str, bytes))
                    and str(connection_id) in {str(resource)
                                               for resource in resources})
-        normalized.append({**raw_grant, "risk_level": 2} if matches else dict(raw_grant))
+        normalized.append({**raw_grant, "risk_level": risk_level} if matches else dict(raw_grant))
     tools = {**context.config.tools, "grants": normalized}
     return replace(context, config=replace(context.config, tools=tools))
 
@@ -452,22 +466,21 @@ class TenantMCPService(AgentToolInvoker):
             allowed = requested[row.connection_id]
             for entry in row.tool_catalog:
                 entry_name = entry.get("name")
-                # Risk is a platform policy, not a remote-server assertion. The
-                # minimum also protects databases containing pre-policy catalogs.
-                effective_risk = 2
+                # Only a strict read-only classification bypasses approval.
+                # Missing, malformed and mutating tools remain L2.
+                effective_risk = 0 if entry.get("risk_level") == 0 else 2
                 if not isinstance(entry_name, str) or entry_name not in allowed:
                     continue
                 safe_entry = {**entry, "risk_level": effective_risk}
                 tools.append(
                     GovernedMCPTool(
-                        # Old released snapshots may contain a provider-derived
-                        # risk of zero. The explicit tenant grant remains valid,
-                        # but every MCP execution is upgraded to the platform's
-                        # confirmation-required risk before governance sees it.
+                        # Agent versions are immutable, so apply the latest
+                        # catalog classification only to this request context.
                         context=_canonical_mcp_context(
                             context,
                             row.connection_id,
                             entry_name,
+                            effective_risk,
                         ),
                         invoker=invoker,
                         sequence=sequence,

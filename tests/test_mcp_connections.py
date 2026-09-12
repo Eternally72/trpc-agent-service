@@ -121,6 +121,11 @@ async def test_mcp_secret_uses_an_independent_tenant_scope(api_client: httpx.Asy
 class _FakeRemoteTool:
     name = "get_file_contents"
     description = "Read one repository file"
+    annotations = {
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+    }
 
     def declaration(self) -> dict[str, object]:
         return {
@@ -221,7 +226,7 @@ def _execution_context(
     )
 
 
-def test_mcp_context_upgrades_legacy_grant_to_platform_risk() -> None:
+def test_mcp_context_uses_catalog_risk_without_mutating_snapshot() -> None:
     tenant_id = uuid4()
     connection_id = uuid4()
     exposed_name = "mcp_legacy_search_repositories"
@@ -236,16 +241,16 @@ def test_mcp_context_upgrades_legacy_grant_to_platform_risk() -> None:
                     "name": exposed_name,
                     "actions": ["execute"],
                     "resources": [str(connection_id)],
-                    "risk_level": 0,
+                    "risk_level": 2,
                 }]
             },
         ),
     )
 
-    canonical = _canonical_mcp_context(legacy, connection_id, exposed_name)
+    canonical = _canonical_mcp_context(legacy, connection_id, exposed_name, 0)
 
-    assert canonical.config.tools["grants"][0]["risk_level"] == 2  # type: ignore[index]
-    assert legacy.config.tools["grants"][0]["risk_level"] == 0  # type: ignore[index]
+    assert canonical.config.tools["grants"][0]["risk_level"] == 0  # type: ignore[index]
+    assert legacy.config.tools["grants"][0]["risk_level"] == 2  # type: ignore[index]
 
 
 @pytest.mark.anyio
@@ -367,68 +372,23 @@ async def test_mcp_service_discovers_and_invokes_tenant_tool_through_public_port
     )
 
     assert catalog[0]["remote_name"] == "get_file_contents"
-    assert catalog[0]["risk_level"] == 2
+    assert catalog[0]["risk_level"] == 0
     assert result.content == "content:README.md"
 
-    visible = await service.tools_for(context, service, CapabilityCallSequence())
-    assert [tool.name for tool in visible] == [exposed_name]
-    downgraded = replace(
+    visible = await service.tools_for(
         context,
-        config=replace(
-            context.config,
-            tools={
-                "grants": [{
-                    "kind": "mcp",
-                    "name": exposed_name,
-                    "actions": ["execute"],
-                    "resources": [str(connection_id)],
-                    "risk_level": 0,
-                }]
-            },
-        ),
-    )
-    # Configurations saved before MCP risk normalization may still contain a
-    # provider-derived risk of zero. The platform must keep those explicit
-    # grants usable while enforcing its canonical approval risk at runtime.
-    legacy_visible = await service.tools_for(
-        downgraded,
         GovernedToolInvoker(service),
         CapabilityCallSequence(),
     )
-    assert [tool.name for tool in legacy_visible] == [exposed_name]
-    with pytest.raises(ToolApprovalRequired, match="trusted approval"):
-        await legacy_visible[0]._run_async_impl(  # pylint: disable=protected-access
-            tool_context=None,  # type: ignore[arg-type]
-            args={"path": "README.md"},
-        )
-
-    governed_context = replace(
-        context,
-        config=replace(
-            context.config,
-            tools={
-                "grants": [{
-                    "kind": "mcp",
-                    "name": exposed_name,
-                    "actions": ["execute"],
-                    "resources": [str(connection_id)],
-                    "risk_level": 2,
-                }]
-            },
-        ),
+    assert [tool.name for tool in visible] == [exposed_name]
+    # The immutable Agent snapshot may still contain the former conservative
+    # risk level. Runtime catalog classification is authoritative for this
+    # explicitly granted connection/tool pair.
+    response = await visible[0]._run_async_impl(  # pylint: disable=protected-access
+        tool_context=None,  # type: ignore[arg-type]
+        args={"path": "README.md"},
     )
-    with pytest.raises(ToolApprovalRequired, match="trusted approval"):
-        await GovernedToolInvoker(service).invoke(
-            governed_context,
-            AgentToolCall(
-                call_id="mcp-request:1:mcp",
-                name=exposed_name,
-                kind=AgentToolKind.MCP,
-                logical_call_index=1,
-                resource=str(connection_id),
-                arguments={"path": "README.md"},
-            ),
-        )
+    assert response == {"result": "content:README.md"}
 
 
 @pytest.mark.anyio
@@ -561,7 +521,7 @@ async def test_mcp_api_rotates_credentials_and_reports_refresh_errors(
     assert duplicate.status_code == 409
     assert refreshed.status_code == 200
     assert refreshed.json()["tool_catalog"][0]["remote_name"] == "read"
-    assert refreshed.json()["tool_catalog"][0]["risk_level"] == 2
+    assert refreshed.json()["tool_catalog"][0]["risk_level"] == 0
     assert failed.status_code == 502
     assert "provider detail" not in failed.text
     assert reread.json()["last_error_code"] == "TimeoutError"
@@ -681,6 +641,7 @@ class _FakeSDKTool:
 
     def __init__(self, *, with_schema: bool = True) -> None:
         self._with_schema = with_schema
+        self._mcp_tool = SimpleNamespace(annotations={"readOnlyHint": True})
 
     def _get_declaration(self) -> FunctionDeclaration:
         return FunctionDeclaration(
@@ -718,6 +679,7 @@ async def test_trpc_mcp_adapter_uses_upstream_toolset_contract(
     adapted_toolset = _TRPCMCPToolset(sdk_toolset)  # type: ignore[arg-type]
 
     assert adapted.name == "sdk-read"
+    assert adapted.annotations == {"readOnlyHint": True}
     assert adapted.declaration()["type"] == "OBJECT"
     assert no_schema.declaration() == {"type": "object", "properties": {}}
     assert await adapted.invoke({"path": "README"}) == {"args": {"path": "README"}}
@@ -732,10 +694,12 @@ async def test_trpc_mcp_adapter_uses_upstream_toolset_contract(
     assert _public_addresses("mcp.example.com") == ("8.8.8.8", )
     assert _exposed_tool_name(uuid4(), "***").endswith("_tool")
 
-    read_only = SimpleNamespace(_tool=SimpleNamespace(_mcp_tool=SimpleNamespace(
-        annotations=SimpleNamespace(readOnlyHint=True))))
-    # A third-party annotation is descriptive input, not a trusted policy fact.
-    assert _risk_level(read_only) == 2  # type: ignore[arg-type]
+    read_only = SimpleNamespace(annotations={"readOnlyHint": True})
+    assert _risk_level(read_only) == 0  # type: ignore[arg-type]
+    unclassified = SimpleNamespace(annotations={})
+    mutating = SimpleNamespace(annotations={"readOnlyHint": False})
+    assert _risk_level(unclassified) == 2  # type: ignore[arg-type]
+    assert _risk_level(mutating) == 2  # type: ignore[arg-type]
 
     connection = MCPConnection(
         endpoint_url="https://mcp.example.com/api",

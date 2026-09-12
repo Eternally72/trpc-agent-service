@@ -146,7 +146,7 @@ async def test_agent_rejects_malformed_capability_policy_before_runtime(
                 "name": "x",
                 "actions": ["execute"],
                 "resources": ["12345678-1234-5678-1234-567812345678"],
-                "risk_level": 0,
+                "risk_level": 1,
             }]
         },
         {
@@ -189,13 +189,20 @@ def test_agent_schema_accepts_typed_tool_skill_and_mcp_grants() -> None:
                     "name": "mcp_read",
                     "actions": ["execute"],
                     "resources": [connection_id],
+                    "risk_level": 0,
+                },
+                {
+                    "kind": "mcp",
+                    "name": "mcp_write",
+                    "actions": ["execute"],
+                    "resources": [connection_id],
                     "risk_level": 2,
                 },
             ],
         },
     )
 
-    assert len(model.tool_permissions["grants"]) == 3
+    assert len(model.tool_permissions["grants"]) == 4
 
 
 @pytest.mark.anyio

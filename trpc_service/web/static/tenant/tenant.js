@@ -30,9 +30,13 @@ function renderCapabilityOptions() {
   ).join("") || "<small>平台当前没有可授权的 Skill。</small>";
   const entries = state.mcpConnections.flatMap((connection) =>
     (connection.tool_catalog || []).map((tool) => ({ connection, tool })));
-  $("#mcp-tool-options").innerHTML = entries.map(({ connection, tool }) =>
-    `<label title="${escapeHTML(tool.description || "")}"><input name="mcp_tools" type="checkbox" value="${escapeHTML(tool.name)}" data-connection="${escapeHTML(connection.connection_id)}" data-risk="${Number(tool.risk_level ?? 2)}">${escapeHTML(connection.name)} / ${escapeHTML(tool.remote_name || tool.name)}</label>`
-  ).join("") || "<small>请先新增并成功刷新 MCP 连接。</small>";
+  $("#mcp-tool-options").innerHTML = entries.map(({ connection, tool }) => {
+    const risk = Number(tool.risk_level) === 0 ? 0 : 2;
+    const interaction = risk === 0
+      ? '<span class="badge">只读直通</span>'
+      : '<span class="badge warning">写操作确认</span>';
+    return `<label title="${escapeHTML(tool.description || "")}"><input name="mcp_tools" type="checkbox" value="${escapeHTML(tool.name)}" data-connection="${escapeHTML(connection.connection_id)}" data-risk="${risk}">${escapeHTML(connection.name)} / ${escapeHTML(tool.remote_name || tool.name)} ${interaction}</label>`;
+  }).join("") || "<small>请先新增并成功刷新 MCP 连接。</small>";
 }
 
 async function loadCapabilityCatalog({ force = false } = {}) {

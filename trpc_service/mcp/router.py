@@ -46,10 +46,11 @@ async def _connection(
 
 
 def _read(row: MCPConnection) -> MCPConnectionRead:
-    # Catalogs created before the platform stopped trusting remote readOnlyHint
-    # may contain risk level zero. Never echo that stale value back into a new
-    # Agent grant; a refresh can persist the canonical value later.
-    safe_catalog = [{**item, "risk_level": 2} for item in row.tool_catalog]
+    # Only the two platform-supported MCP classifications leave the API. Any
+    # malformed or legacy value fails closed as a confirmation-required write.
+    safe_catalog = [{
+        **item, "risk_level": 0 if item.get("risk_level") == 0 else 2
+    } for item in row.tool_catalog]
     return MCPConnectionRead(
         connection_id=row.connection_id,
         tenant_id=row.tenant_id,

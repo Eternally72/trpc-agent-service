@@ -20,6 +20,6 @@
 | Artifact | 存放在对象存储中的原始文件或媒体，SQL 只保存租户化元数据和引用。 | Session 或向量索引本身。 |
 | Skill | 平台审核并发布的可复用操作知识，由 Agent 显式授权后按需加载。 | 可直接执行命令的脚本、Tool 或 MCP 服务。 |
 | MCP Connection | 租户创建的远程 MCP 服务连接，包含 URL、加密凭据引用和刷新后的工具目录。 | 平台代租户编写或托管的业务工具实现。 |
-| MCP Tool | MCP Connection 暴露并被 Agent 单独授权的远程能力，执行时进入统一治理链路。 | 绕过权限、二次确认、Tool Ledger 或审计的直接网络调用。 |
+| MCP Tool | MCP Connection 暴露并被 Agent 单独授权的远程能力；声明为只读的 Tool 直接执行，其他 Tool 需要确认。 | 绕过权限、Tool Ledger 或审计的直接网络调用。 |
 | SecretRef | 指向环境变量、文件或租户加密密钥记录的引用；业务配置只保存引用。 | API Key、Bot Secret 等凭证明文。 |
 | Tool Ledger | 按稳定调用标识记录 Tool/MCP 执行状态和结果，用于幂等重放与 UNKNOWN 隔离。 | 普通应用日志。 |
