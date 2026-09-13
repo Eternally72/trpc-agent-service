@@ -66,3 +66,16 @@ def test_redeploy_reloads_mutable_configuration_and_rotated_passwords() -> None:
     assert "deployment/channel-runtime deployment/worker-scaler" in deploy_script
     assert "TRPC_K8S_REUSE_IMAGE" in deploy_script
     assert 'docker image inspect "$IMAGE"' in deploy_script
+
+
+def test_seaweedfs_service_exposes_its_internal_volume_server() -> None:
+    """The all-in-one filer must reach the volume URL it advertises via Service DNS."""
+
+    storage = (PROJECT_ROOT / "deploy/kubernetes/storage.yaml").read_text(encoding="utf-8")
+    service_start = storage.index("kind: Service\nmetadata:\n  name: seaweedfs")
+    statefulset_start = storage.index("kind: StatefulSet\nmetadata:\n  name: seaweedfs")
+    service = storage[service_start:statefulset_start]
+
+    assert "name: volume" in service
+    assert "port: 8080" in service
+    assert "targetPort: 8080" in service

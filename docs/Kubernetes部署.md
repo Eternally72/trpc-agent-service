@@ -65,7 +65,7 @@ TRPC_K8S_REUSE_IMAGE=trpc-agent-service:<已有标签> ./deploy/kubernetes/deplo
 
 新建或更新的 IM Binding 由租户管理员在 `/tenant` 中配置，密钥以数据库密文保存。部署脚本仍兼容迁移前的本地文件型 SecretRef，便于已有 Binding 平滑切换；通过管理台重新保存密钥后不再依赖对应文件。
 
-当前清单已经覆盖 Redis 近期会话缓存、PostgreSQL/pgvector 持久事实与向量、SeaweedFS Artifact、租户加密 IM/MCP 凭据、Skill 文件、MCP 出站调用、动态 Worker 扩缩容，以及 Prometheus、Grafana、Tempo、Loki、Alloy 全链路可观测。上述应用能力都随同一镜像和共享配置发布，不需要为 Skill、MCP 或新的 IM Adapter 单独增加 Pod。
+当前清单已经覆盖 Redis 近期会话缓存、PostgreSQL/pgvector 持久事实与向量、SeaweedFS Artifact（S3 入口和内部 Volume 数据通道）、租户加密 IM/MCP 凭据、Skill 文件、MCP 出站调用、动态 Worker 扩缩容，以及 Prometheus、Grafana、Tempo、Loki、Alloy 全链路可观测。上述应用能力都随同一镜像和共享配置发布，不需要为 Skill、MCP 或新的 IM Adapter 单独增加 Pod。
 
 ## 验证
 

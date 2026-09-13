@@ -199,14 +199,36 @@ async function loadMcpConnections() {
   await loadCapabilityCatalog({ force: true });
   $("#mcp-rows").innerHTML = state.mcpConnections.map((item) => {
     const tools = (item.tool_catalog || []).map((tool) => tool.remote_name || tool.name);
+    const authorizedAgents = state.agents.filter((agent) =>
+      (agent.tool_permissions?.grants || []).some((grant) =>
+        grant.kind === "mcp" && (grant.resources || []).includes(item.connection_id)))
+      .map((agent) => agent.name);
+    const authorization = authorizedAgents.length
+      ? `已授权：${authorizedAgents.join("、")}` : "尚未授权给 Agent";
     const credential = item.auth_type === "none"
       ? "无需认证" : (item.credential_configured ? "Bearer · 已配置" : "Bearer · 未配置");
-    return `<tr><td><span class="row-title">${escapeHTML(item.name)}</span><span class="row-subtitle mono">${escapeHTML(item.connection_id)}</span></td><td class="mono">${escapeHTML(item.endpoint_url)}</td><td>${escapeHTML(credential)}</td><td><span class="row-title">${tools.length} 个</span><span class="row-subtitle">${escapeHTML(tools.join("、") || (item.last_error_code ? `刷新失败：${item.last_error_code}` : "尚未刷新"))}</span></td><td>${badge(item.status)}</td><td><div class="actions"><button class="button secondary small mcp-edit" data-id="${item.connection_id}">编辑</button><button class="button secondary small mcp-refresh" data-id="${item.connection_id}">测试并刷新</button><button class="button danger small mcp-disable" data-id="${item.connection_id}">停用</button></div></td></tr>`;
+    return `<tr><td><span class="row-title">${escapeHTML(item.name)}</span><span class="row-subtitle mono">${escapeHTML(item.connection_id)}</span></td><td class="mono">${escapeHTML(item.endpoint_url)}</td><td>${escapeHTML(credential)}</td><td><span class="row-title">${tools.length} 个</span><span class="row-subtitle">${escapeHTML(tools.join("、") || (item.last_error_code ? `刷新失败：${item.last_error_code}` : "尚未刷新"))}</span><span class="row-subtitle">${escapeHTML(authorization)}</span></td><td>${badge(item.status)}</td><td><div class="actions"><button class="button secondary small mcp-edit" data-id="${item.connection_id}">编辑</button><button class="button secondary small mcp-refresh" data-id="${item.connection_id}">测试并刷新</button><button class="button secondary small mcp-grant" data-id="${item.connection_id}">配置 Agent</button><button class="button danger small mcp-disable" data-id="${item.connection_id}">停用</button></div></td></tr>`;
   }).join("") || empty(6);
   $$(".mcp-edit").forEach((button) => button.addEventListener("click", () => editMcp(button.dataset.id)));
   $$(".mcp-refresh").forEach((button) => button.addEventListener("click", () => refreshMcp(button)));
+  $$(".mcp-grant").forEach((button) => button.addEventListener("click", () => configureMcpGrant(button.dataset.id)));
   $$(".mcp-disable").forEach((button) => button.addEventListener("click", () => disableMcp(button)));
   return { items: state.mcpConnections, total: state.mcpConnections.length };
+}
+
+function configureMcpGrant(connectionId) {
+  if (!state.agents.length) {
+    showView("agents");
+    toast("请先创建 Agent，再为它授权 MCP 工具", "warning");
+    return;
+  }
+  if (state.agents.length === 1) {
+    editAgent(state.agents[0].agent_app_id);
+    toast("请在 MCP 工具中勾选所需能力并保存 Agent", "warning");
+    return;
+  }
+  showView("agents");
+  toast(`请选择目标 Agent 并点击“编辑”，再配置连接 ${connectionId.slice(0, 8)} 的工具`, "warning");
 }
 
 function editMcp(connectionId) {
@@ -227,7 +249,7 @@ async function refreshMcp(button) {
   await mutate({
     button,
     request: () => api(`/tenants/${tenantId()}/mcp-connections/${button.dataset.id}/refresh`, { method: "POST" }),
-    success: "MCP 连接已验证，工具目录已刷新",
+    success: "MCP 连接已验证；请继续配置目标 Agent 的工具授权",
     refreshView: "mcp",
   });
 }

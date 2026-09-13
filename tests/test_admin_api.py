@@ -70,6 +70,9 @@ async def test_admin_console_remains_available_without_temporary_webui(
     assert "待系统管理员配置模型" in tenant_script.text
     assert "只读直通" in tenant_script.text
     assert "写操作确认" in tenant_script.text
+    assert "尚未授权给 Agent" in tenant_script.text
+    assert "配置 Agent" in tenant_script.text
+    assert "刷新成功不等于 Agent 已获授权" in tenant_page.text
     assert 'value="http.get"' in tenant_page.text
     assert 'value="http_get"' not in tenant_page.text
     assert 'data-view="mcp"' in tenant_page.text
