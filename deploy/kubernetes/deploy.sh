@@ -33,12 +33,16 @@ prune_unused_project_images() {
 
 sync_database_password() {
     # PostgreSQL consumes POSTGRES_PASSWORD_FILE only while initializing a new
-    # data directory. Keep an existing PVC aligned after platform Secret rotation.
-    kubectl exec -n "$NAMESPACE" postgres-0 -- sh -ceu '
-        password="$(cat /run/secrets/platform/postgres_password)"
-        printf "ALTER ROLE trpc PASSWORD '\''%s'\'';\n" "$password" \
-            | psql --username trpc --dbname trpc_agent --set ON_ERROR_STOP=1 >/dev/null
-    '
+    # data directory. Read the authoritative local file instead of the
+    # asynchronously updated Secret volume. psql's password command hashes the
+    # value client-side, keeping plaintext out of SQL and PostgreSQL logs.
+    local password
+    password="$(<"$PROJECT_ROOT/.secrets/postgres_password")"
+    printf '%s\n%s\n' "$password" "$password" \
+        | kubectl exec -i -n "$NAMESPACE" postgres-0 -- \
+            psql --username trpc --dbname trpc_agent --set ON_ERROR_STOP=1 \
+            --command '\password trpc' >/dev/null
+    unset password
 }
 
 sync_grafana_password() {
@@ -211,6 +215,12 @@ if ! kubectl wait --for=condition=complete job/database-migration \
 fi
 
 sed "s|trpc-agent-service:0.1.0|$IMAGE|g" "$DEPLOY_DIR/application.yaml" | kubectl apply -f -
+# ConfigMap and Secret volumes eventually refresh their files, but Settings is
+# process-scoped. Restart every business role so a successful deploy means all
+# processes have loaded the exact configuration synchronized above.
+kubectl rollout restart deployment/gateway deployment/agent-worker \
+    deployment/channel-runtime deployment/worker-scaler \
+    --namespace "$NAMESPACE"
 kubectl rollout status deployment/agent-worker -n "$NAMESPACE" --timeout=300s
 kubectl rollout status deployment/gateway -n "$NAMESPACE" --timeout=300s
 kubectl rollout status deployment/channel-runtime -n "$NAMESPACE" --timeout=300s

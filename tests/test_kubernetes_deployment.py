@@ -57,8 +57,12 @@ def test_redeploy_reloads_mutable_configuration_and_rotated_passwords() -> None:
 
     assert "sync_database_password" in deploy_script
     assert "sync_grafana_password" in deploy_script
+    assert "cat /run/secrets/platform/postgres_password" not in deploy_script
+    assert "\\password trpc" in deploy_script
     assert "rollout restart deployment/tempo deployment/loki" in deploy_script
     assert "deployment/otel-collector deployment/prometheus" in deploy_script
     assert "deployment/grafana deployment/alloy" in deploy_script
+    assert "rollout restart deployment/gateway deployment/agent-worker" in deploy_script
+    assert "deployment/channel-runtime deployment/worker-scaler" in deploy_script
     assert "TRPC_K8S_REUSE_IMAGE" in deploy_script
     assert 'docker image inspect "$IMAGE"' in deploy_script
