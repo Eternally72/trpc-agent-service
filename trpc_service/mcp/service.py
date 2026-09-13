@@ -6,6 +6,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import ipaddress
 import json
+import logging
 import re
 import socket
 from typing import Any, Protocol, cast
@@ -31,6 +32,9 @@ from trpc_service.agent.ports import AgentToolInvoker
 from trpc_service.agent.adapters.trpc_tools import CapabilityCallSequence
 from trpc_service.agent.governance import ToolApprovalRequired
 from trpc_service.mcp.models import MCPConnection
+from trpc_service.mcp.schemas import MCPToolRisk, normalize_mcp_tool_risk
+
+logger = logging.getLogger(__name__)
 
 
 class RemoteMCPTool(Protocol):
@@ -64,6 +68,7 @@ _MAX_MCP_TOOLS = 100
 _MAX_MCP_SCHEMA_BYTES = 64 * 1024
 _MAX_MCP_CATALOG_BYTES = 1024 * 1024
 _MAX_MCP_RESULT_BYTES = 256 * 1024
+_RISK_POLICY_VERSION = 1
 
 
 def _public_addresses(host: str) -> tuple[str, ...]:
@@ -149,11 +154,13 @@ def _default_toolset_factory(
 def _risk_level(tool: RemoteMCPTool) -> int:
     """Allow explicitly granted, provider-declared reads without a second prompt."""
 
-    # Missing or malformed annotations fail closed. A readOnlyHint only changes
-    # interaction risk after the tenant administrator has explicitly connected
-    # the server and granted this exact Tool to the Agent.
+    # Missing, malformed, or contradictory annotations fail closed. Provider
+    # annotations are only considered after a tenant administrator explicitly
+    # connects the server and grants this exact Tool to an Agent.
     annotations = getattr(tool, "annotations", {})
-    return 0 if isinstance(annotations, Mapping) and annotations.get("readOnlyHint") is True else 2
+    is_declared_read = (isinstance(annotations, Mapping) and annotations.get("readOnlyHint") is True
+                        and annotations.get("destructiveHint") is not True)
+    return int(MCPToolRisk.READ_ONLY_DIRECT if is_declared_read else MCPToolRisk.CONFIRMED_MUTATION)
 
 
 class GovernedMCPTool(BaseTool):  # type: ignore[misc]
@@ -265,6 +272,10 @@ class TenantMCPService(AgentToolInvoker):
         self._toolset_factory = toolset_factory
         self._resolve_host = resolve_host
         self._private_allowed_hosts = {host.casefold() for host in private_allowed_hosts}
+        # Upgrade a legacy cached catalog at most once per process. A failed
+        # discovery remains confirmation-required and can be retried from the UI.
+        self._policy_refresh_attempted: set[UUID] = set()
+        self._policy_refresh_locks: dict[UUID, asyncio.Lock] = {}
 
     async def _connection(self, tenant_id: UUID, connection_id: UUID) -> MCPConnection:
         async with self._sessions() as database:
@@ -351,6 +362,7 @@ class TenantMCPService(AgentToolInvoker):
                     "description": tool.description[:1000],
                     "input_schema": input_schema,
                     "risk_level": _risk_level(tool),
+                    "risk_policy_version": _RISK_POLICY_VERSION,
                 }
                 catalog_bytes += len(
                     json.dumps(
@@ -421,6 +433,25 @@ class TenantMCPService(AgentToolInvoker):
             raise ValueError("MCP Tool result exceeds the size limit")
         return AgentToolResult(call_id=call.call_id, content=content)
 
+    async def _refresh_legacy_catalog(self, row: MCPConnection) -> None:
+        """Reclassify one pre-policy catalog while keeping concurrent requests ordered."""
+
+        lock = self._policy_refresh_locks.setdefault(row.connection_id, asyncio.Lock())
+        async with lock:
+            if row.connection_id in self._policy_refresh_attempted:
+                return
+            self._policy_refresh_attempted.add(row.connection_id)
+            try:
+                await self.refresh(row.tenant_id, row.connection_id)
+            except Exception as error:  # noqa: BLE001 - preserve safe legacy catalog
+                logger.warning(
+                    "Unable to reclassify legacy MCP catalog; confirmation remains required",
+                    extra={
+                        "connection_id": str(row.connection_id),
+                        "error_type": type(error).__name__,
+                    },
+                )
+
     async def tools_for(
         self,
         context: AgentExecutionContext,
@@ -461,6 +492,21 @@ class TenantMCPService(AgentToolInvoker):
                     MCPConnection.connection_id.in_(requested),
                     MCPConnection.status == "active",
                 ))).all()
+        stale_rows = [
+            row for row in rows if any(
+                entry.get("risk_policy_version") != _RISK_POLICY_VERSION
+                for entry in row.tool_catalog)
+        ]
+        for row in stale_rows:
+            await self._refresh_legacy_catalog(row)
+        if stale_rows:
+            async with self._sessions() as database:
+                rows = (await database.scalars(
+                    select(MCPConnection).where(
+                        MCPConnection.tenant_id == context.request.tenant.tenant_id,
+                        MCPConnection.connection_id.in_(requested),
+                        MCPConnection.status == "active",
+                    ))).all()
         tools: list[BaseTool] = []
         for row in rows:
             allowed = requested[row.connection_id]
@@ -468,7 +514,7 @@ class TenantMCPService(AgentToolInvoker):
                 entry_name = entry.get("name")
                 # Only a strict read-only classification bypasses approval.
                 # Missing, malformed and mutating tools remain L2.
-                effective_risk = 0 if entry.get("risk_level") == 0 else 2
+                effective_risk = int(normalize_mcp_tool_risk(entry.get("risk_level")))
                 if not isinstance(entry_name, str) or entry_name not in allowed:
                     continue
                 safe_entry = {**entry, "risk_level": effective_risk}

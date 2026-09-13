@@ -17,6 +17,7 @@ from trpc_service.mcp.schemas import (
     MCPConnectionList,
     MCPConnectionRead,
     MCPConnectionUpdate,
+    normalize_mcp_tool_risk,
 )
 from trpc_service.storage.database import get_session
 from trpc_service.tenant.models import Tenant
@@ -49,7 +50,7 @@ def _read(row: MCPConnection) -> MCPConnectionRead:
     # Only the two platform-supported MCP classifications leave the API. Any
     # malformed or legacy value fails closed as a confirmation-required write.
     safe_catalog = [{
-        **item, "risk_level": 0 if item.get("risk_level") == 0 else 2
+        **item, "risk_level": int(normalize_mcp_tool_risk(item.get("risk_level")))
     } for item in row.tool_catalog]
     return MCPConnectionRead(
         connection_id=row.connection_id,

@@ -373,6 +373,7 @@ async def test_mcp_service_discovers_and_invokes_tenant_tool_through_public_port
 
     assert catalog[0]["remote_name"] == "get_file_contents"
     assert catalog[0]["risk_level"] == 0
+    assert catalog[0]["risk_policy_version"] == 1
     assert result.content == "content:README.md"
 
     visible = await service.tools_for(
@@ -389,6 +390,39 @@ async def test_mcp_service_discovers_and_invokes_tenant_tool_through_public_port
         args={"path": "README.md"},
     )
     assert response == {"result": "content:README.md"}
+
+    # Deployments created before read/write classification are upgraded lazily,
+    # so an existing tenant does not need to discover a hidden refresh step.
+    async with app.state.session_factory.begin() as database:
+        persisted = await database.get(MCPConnection, connection_id)
+        assert persisted is not None
+        persisted.tool_catalog = [{
+            **{
+                key: value
+                for key, value in catalog[0].items() if key != "risk_policy_version"
+            },
+            "risk_level": 2,
+        }]
+    upgraded_service = TenantMCPService(
+        app.state.session_factory,
+        app.state.container.tenant_secrets,
+        toolset_factory=lambda *_: _FakeToolset(),
+        resolve_host=lambda _: ("8.8.8.8", ),
+    )
+    upgraded = await upgraded_service.tools_for(
+        context,
+        GovernedToolInvoker(upgraded_service),
+        CapabilityCallSequence(),
+    )
+    upgraded_response = await upgraded[0]._run_async_impl(  # pylint: disable=protected-access
+        tool_context=None,  # type: ignore[arg-type]
+        args={"path": "README.md"},
+    )
+    assert upgraded_response == {"result": "content:README.md"}
+    async with app.state.session_factory() as database:
+        persisted = await database.get(MCPConnection, connection_id)
+        assert persisted is not None
+        assert persisted.tool_catalog[0]["risk_policy_version"] == 1
 
 
 @pytest.mark.anyio
@@ -698,8 +732,10 @@ async def test_trpc_mcp_adapter_uses_upstream_toolset_contract(
     assert _risk_level(read_only) == 0  # type: ignore[arg-type]
     unclassified = SimpleNamespace(annotations={})
     mutating = SimpleNamespace(annotations={"readOnlyHint": False})
+    contradictory = SimpleNamespace(annotations={"readOnlyHint": True, "destructiveHint": True})
     assert _risk_level(unclassified) == 2  # type: ignore[arg-type]
     assert _risk_level(mutating) == 2  # type: ignore[arg-type]
+    assert _risk_level(contradictory) == 2  # type: ignore[arg-type]
 
     connection = MCPConnection(
         endpoint_url="https://mcp.example.com/api",

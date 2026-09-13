@@ -1,7 +1,7 @@
 """Validated HTTP contracts for remote MCP connections."""
 
 from datetime import datetime
-from enum import StrEnum
+from enum import IntEnum, StrEnum
 from typing import Any
 from urllib.parse import urlsplit
 from uuid import UUID
@@ -19,6 +19,21 @@ class MCPAuthType(StrEnum):
 class MCPConnectionStatus(StrEnum):
     ACTIVE = "active"
     DISABLED = "disabled"
+
+
+class MCPToolRisk(IntEnum):
+    """Interaction policy applied to tenant-granted MCP tools."""
+
+    READ_ONLY_DIRECT = 0
+    CONFIRMED_MUTATION = 2
+
+
+def normalize_mcp_tool_risk(value: object) -> MCPToolRisk:
+    """Fail closed when a persisted or remote risk value is malformed."""
+
+    if value == MCPToolRisk.READ_ONLY_DIRECT and not isinstance(value, bool):
+        return MCPToolRisk.READ_ONLY_DIRECT
+    return MCPToolRisk.CONFIRMED_MUTATION
 
 
 def _validate_endpoint(value: str) -> str:
