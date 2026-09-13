@@ -53,9 +53,19 @@ docker compose down
 ./deploy/kubernetes/deploy.sh
 ```
 
-脚本会使用项目 `Dockerfile` 构建 Python 3.12 应用镜像、同步平台 Secret、创建 ConfigMap、启动存储和监控、执行 Alembic Job，并滚动部署应用角色。发布成功后，只清理未被当前 Namespace 中任何 Pod 引用的旧 `trpc-agent-service` 镜像。真实密钥只从已忽略的 `.env` 和 `.secrets/` 读取，不写入部署清单。首次以 Kubernetes 启动时会生成并持久保留租户 SecretStore 主密钥。
+如果只修改了 Kubernetes 清单或运行配置，或者目标应用镜像已由 CI 构建，可以显式复用本机已有镜像，避免重复构建：
+
+```bash
+TRPC_K8S_REUSE_IMAGE=trpc-agent-service:<已有标签> ./deploy/kubernetes/deploy.sh
+```
+
+应用代码发生变化时仍应使用默认命令构建新镜像；复用模式会先验证镜像存在，再执行迁移和滚动发布。
+
+脚本会使用项目 `Dockerfile` 构建 Python 3.12 应用镜像、同步平台 Secret、创建 ConfigMap、启动存储和监控、执行 Alembic Job，并滚动部署应用角色。每次重新部署都会重启依赖 ConfigMap 的可观测组件，并将 PostgreSQL、Grafana 持久化密码与最新 Secret 同步，避免 Pod 继续使用旧配置或旧密码。发布成功后，只清理未被当前 Namespace 中任何 Pod 引用的旧 `trpc-agent-service` 镜像。真实密钥只从已忽略的 `.env` 和 `.secrets/` 读取，不写入部署清单。首次以 Kubernetes 启动时会生成并持久保留租户 SecretStore 主密钥。
 
 新建或更新的 IM Binding 由租户管理员在 `/tenant` 中配置，密钥以数据库密文保存。部署脚本仍兼容迁移前的本地文件型 SecretRef，便于已有 Binding 平滑切换；通过管理台重新保存密钥后不再依赖对应文件。
+
+当前清单已经覆盖 Redis 近期会话缓存、PostgreSQL/pgvector 持久事实与向量、SeaweedFS Artifact、租户加密 IM/MCP 凭据、Skill 文件、MCP 出站调用、动态 Worker 扩缩容，以及 Prometheus、Grafana、Tempo、Loki、Alloy 全链路可观测。上述应用能力都随同一镜像和共享配置发布，不需要为 Skill、MCP 或新的 IM Adapter 单独增加 Pod。
 
 ## 验证
 

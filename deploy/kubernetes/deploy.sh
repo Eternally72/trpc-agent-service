@@ -8,7 +8,8 @@ readonly DEPLOY_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly PROJECT_ROOT="$(cd -- "$DEPLOY_DIR/../.." && pwd)"
 readonly NAMESPACE=trpc-agent-service
 readonly IMAGE_TAG="${TRPC_K8S_IMAGE_TAG:-0.1.0-$(date -u +%Y%m%d%H%M%S)}"
-readonly IMAGE="trpc-agent-service:${IMAGE_TAG}"
+readonly REUSE_IMAGE="${TRPC_K8S_REUSE_IMAGE:-}"
+readonly IMAGE="${REUSE_IMAGE:-trpc-agent-service:${IMAGE_TAG}}"
 readonly IMPORT_FLAG="${1:-}"
 
 prune_unused_project_images() {
@@ -30,11 +31,31 @@ prune_unused_project_images() {
     done < <(docker image ls --filter 'reference=trpc-agent-service:*' --format '{{.Repository}}:{{.Tag}}')
 }
 
+sync_database_password() {
+    # PostgreSQL consumes POSTGRES_PASSWORD_FILE only while initializing a new
+    # data directory. Keep an existing PVC aligned after platform Secret rotation.
+    kubectl exec -n "$NAMESPACE" postgres-0 -- sh -ceu '
+        password="$(cat /run/secrets/platform/postgres_password)"
+        printf "ALTER ROLE trpc PASSWORD '\''%s'\'';\n" "$password" \
+            | psql --username trpc --dbname trpc_agent --set ON_ERROR_STOP=1 >/dev/null
+    '
+}
+
+sync_grafana_password() {
+    # Grafana also persists the initial admin password in its database. Pass the
+    # rotated value through stdin so it never appears in arguments or manifests.
+    kubectl exec -i -n "$NAMESPACE" deployment/grafana -- \
+        grafana cli --homepath /usr/share/grafana \
+        --config /etc/grafana/grafana.ini \
+        admin reset-admin-password --password-from-stdin \
+        <"$PROJECT_ROOT/.secrets/grafana_admin_password" >/dev/null
+}
+
 if [[ $# -gt 1 || ($# -eq 1 && "$IMPORT_FLAG" != "--import-compose-data") ]]; then
     echo "usage: $0 [--import-compose-data]" >&2
     exit 2
 fi
-if [[ ! "$IMAGE_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+if [[ -z "$REUSE_IMAGE" && ! "$IMAGE_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
     echo "error: TRPC_K8S_IMAGE_TAG is not a valid container image tag" >&2
     exit 2
 fi
@@ -79,8 +100,16 @@ if [[ -z "$dashscope_api_key" ]]; then
     exit 1
 fi
 
-echo "Building $IMAGE"
-docker build --tag "$IMAGE" "$PROJECT_ROOT"
+if [[ -n "$REUSE_IMAGE" ]]; then
+    if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+        echo "error: TRPC_K8S_REUSE_IMAGE does not exist locally: $IMAGE" >&2
+        exit 1
+    fi
+    echo "Reusing existing image $IMAGE"
+else
+    echo "Building $IMAGE"
+    docker build --tag "$IMAGE" "$PROJECT_ROOT"
+fi
 
 kubectl apply -f "$DEPLOY_DIR/namespace.yaml"
 
@@ -140,15 +169,24 @@ kubectl create configmap trpc-alloy-config \
 
 kubectl apply -f "$DEPLOY_DIR/storage.yaml"
 kubectl apply -f "$DEPLOY_DIR/observability.yaml"
+# Projected ConfigMap files change without restarting their consumers. Restart
+# every config-backed observability role so a redeploy cannot retain old rules,
+# dashboards, pipelines, or storage configuration in memory.
+kubectl rollout restart deployment/tempo deployment/loki \
+    deployment/otel-collector deployment/prometheus \
+    deployment/grafana deployment/alloy \
+    --namespace "$NAMESPACE"
 kubectl rollout status statefulset/postgres -n "$NAMESPACE" --timeout=240s
 kubectl rollout status statefulset/redis -n "$NAMESPACE" --timeout=180s
 kubectl rollout status statefulset/seaweedfs -n "$NAMESPACE" --timeout=240s
+sync_database_password
 for deployment_name in tempo loki otel-collector prometheus grafana alloy; do
     # A deployment is not usable merely because its manifest was accepted;
     # readiness here keeps the final success message truthful on first boot.
     kubectl rollout status "deployment/$deployment_name" \
         -n "$NAMESPACE" --timeout=240s
 done
+sync_grafana_password
 
 if [[ "$IMPORT_FLAG" == "--import-compose-data" ]]; then
     if ! docker compose -f "$PROJECT_ROOT/compose.yaml" ps --status running postgres \

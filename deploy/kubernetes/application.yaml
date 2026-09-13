@@ -308,13 +308,15 @@ spec:
               value: supervisor
             - name: TRPC_SERVICE_WORKER_CONCURRENCY
               value: "0"
+          # The supervisor imports the same typed runtime composition as
+          # Workers even though it only reconciles replicas.
           resources:
             requests:
               cpu: 10m
-              memory: 48Mi
+              memory: 128Mi
             limits:
               cpu: 200m
-              memory: 128Mi
+              memory: 384Mi
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

@@ -42,3 +42,23 @@ def test_worker_scaler_has_narrow_deployment_scale_permission() -> None:
     assert "TRPC_SERVICE_WORKER_SCALER_MODE=kubernetes" in config
     assert "rollout status deployment/worker-scaler" in deploy_script
     assert stop_script.index("deployment/worker-scaler") < stop_script.index("deployment/gateway")
+
+    scaler_start = application.index("kind: Deployment\nmetadata:\n  name: worker-scaler")
+    scaler_end = application.index("kind: Deployment\nmetadata:\n  name: channel-runtime")
+    scaler = application[scaler_start:scaler_end]
+    assert "requests:\n              cpu: 10m\n              memory: 128Mi" in scaler
+    assert "limits:\n              cpu: 200m\n              memory: 384Mi" in scaler
+
+
+def test_redeploy_reloads_mutable_configuration_and_rotated_passwords() -> None:
+    """A rollout must not keep stale ConfigMaps or file-backed credentials."""
+
+    deploy_script = (PROJECT_ROOT / "deploy/kubernetes/deploy.sh").read_text(encoding="utf-8")
+
+    assert "sync_database_password" in deploy_script
+    assert "sync_grafana_password" in deploy_script
+    assert "rollout restart deployment/tempo deployment/loki" in deploy_script
+    assert "deployment/otel-collector deployment/prometheus" in deploy_script
+    assert "deployment/grafana deployment/alloy" in deploy_script
+    assert "TRPC_K8S_REUSE_IMAGE" in deploy_script
+    assert 'docker image inspect "$IMAGE"' in deploy_script
