@@ -33,6 +33,20 @@ mkdir -p -- "$WORKER_PID_DIR"
 # telemetry rather than application source data.
 mkdir -p -- "$DATA_DIR/postgresql" "$DATA_DIR/redis" "$DATA_DIR/seaweedfs" \
     "$DATA_DIR/workspaces"
+# These three directories are bind-mounted into containers that run with
+# image-specific UIDs. A fresh clone combined with ``umask 077`` would leave
+# them at 0700 and make PostgreSQL 18 fail its first initialization. They hold
+# local test data only, so use portable writable permissions across Linux and
+# Docker Desktop; the tenant Workspace remains private to the host process.
+for container_data_dir in "$DATA_DIR/postgresql" "$DATA_DIR/redis" "$DATA_DIR/seaweedfs"; do
+    # After first startup the image may own this directory. In that case its
+    # permissions are already managed by the service and the host must not fail
+    # a later restart merely because it cannot chmod a container-owned path.
+    if [[ -O "$container_data_dir" ]]; then
+        chmod 0777 "$container_data_dir"
+    fi
+done
+chmod 0700 "$DATA_DIR/workspaces"
 
 generate_secret() {
     local target="$1"
@@ -83,7 +97,14 @@ if curl --noproxy '*' --fail --silent --max-time 1 \
 fi
 
 "$PROJECT_ROOT/build.sh"
-docker compose up --detach --wait --remove-orphans
+if ! docker compose up --detach --wait --remove-orphans; then
+    echo "error: Docker infrastructure did not become healthy" >&2
+    # Compose's summary often reports only ``postgres is unhealthy``. Include
+    # bounded diagnostics so a fresh-clone failure is actionable during a demo.
+    docker compose ps --all >&2 || true
+    docker compose logs --no-color --tail 80 postgres >&2 || true
+    exit 1
+fi
 
 POSTGRES_ENDPOINT="$(docker compose port postgres 5432 2>/dev/null || true)"
 if [[ ! "$POSTGRES_ENDPOINT" =~ ^127\.0\.0\.1:[0-9]+$ ]]; then
