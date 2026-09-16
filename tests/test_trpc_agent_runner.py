@@ -2,12 +2,13 @@ from collections.abc import AsyncIterator
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import cast
 from uuid import uuid4
 
 import pytest
 from pydantic import SecretStr
 from trpc_agent_sdk.events import Event
-from trpc_agent_sdk.runners import RunConfig
+from trpc_agent_sdk.runners import RunConfig, Runner
 from trpc_agent_sdk.sessions import InMemorySessionService
 from trpc_agent_sdk.types import Content, GenerateContentResponseUsageMetadata, Part
 
@@ -17,18 +18,18 @@ from trpc_service.agent import (
     AgentExecutionRequest,
     AgentInputArtifact,
     AgentRuntimeConfig,
-    AgentRunResult,
     AgentToolCall,
     AgentToolInvoker,
     AgentToolResult,
     PolicyAction,
     PolicyDecision,
 )
-from trpc_service.agent.adapters.trpc import TRPCAgentRunner
-from trpc_service.agent.factory import (
-    ConfiguredTRPCAgentRunner,
+from trpc_service.agent.adapters.trpc import (
+    TRPCAgentRunner,
+    _SDKRuntime,
+    _close_sdk_runtime,
     _resolve_secret,
-    build_trpc_agent_runner,
+    _run_sdk_turn,
 )
 from trpc_service.channels import ChannelBindingConfig, IncomingMessage, MessageKind
 from trpc_service.config import Settings
@@ -171,6 +172,12 @@ class UnusedToolInvoker(AgentToolInvoker):
         raise AssertionError("the text-only Agent must not invoke tools")
 
 
+def _sdk_runner(double: object) -> Runner:
+    """Keep SDK-shaped test doubles explicit without weakening production types."""
+
+    return cast(Runner, double)
+
+
 def _context() -> AgentExecutionContext:
     tenant_id = uuid4()
     agent_app_id = uuid4()
@@ -209,10 +216,9 @@ def _context() -> AgentExecutionContext:
 @pytest.mark.anyio
 async def test_trpc_agent_runner_maps_context_to_final_text_reply() -> None:
     sdk_runner = RecordingSDKRunner()
-    runner = TRPCAgentRunner(sdk_runner)
     context = _context()
 
-    result = await runner.run(context, UnusedToolInvoker())
+    result = await _run_sdk_turn(_sdk_runner(sdk_runner), context, UnusedToolInvoker())
 
     assert sdk_runner.user_id.endswith(":browser-user-1")
     assert sdk_runner.session_id.endswith(":session-1")
@@ -223,7 +229,6 @@ async def test_trpc_agent_runner_maps_context_to_final_text_reply() -> None:
     assert result.usage.input_tokens == 12
     assert result.usage.output_tokens == 4
     assert result.usage.total_tokens == 16
-    await runner.close()
 
 
 @pytest.mark.anyio
@@ -231,7 +236,6 @@ async def test_trpc_agent_runner_does_not_expose_im_files_as_knowledge_mutations
     """An IM file caption remains ordinary model input without RAG write hints."""
 
     sdk_runner = RecordingSDKRunner()
-    runner = TRPCAgentRunner(sdk_runner)
     context = _context()
     context = replace(
         context,
@@ -250,12 +254,11 @@ async def test_trpc_agent_runner_does_not_expose_im_files_as_knowledge_mutations
         ),
     )
 
-    result = await runner.run(context, UnusedToolInvoker())
+    result = await _run_sdk_turn(_sdk_runner(sdk_runner), context, UnusedToolInvoker())
 
     assert sdk_runner.message == ""
     assert "租户管理员" in (result.replies[0].text or "")
     assert result.state == {}
-    await runner.close()
 
 
 @pytest.mark.anyio
@@ -287,7 +290,12 @@ async def test_trpc_agent_runner_rehydrates_shared_session_history() -> None:
     )
 
     sessions = InMemorySessionService()
-    await TRPCAgentRunner(sdk_runner, sessions).run(context, UnusedToolInvoker())
+    await _run_sdk_turn(
+        _sdk_runner(sdk_runner),
+        context,
+        UnusedToolInvoker(),
+        sessions,
+    )
 
     session = await sessions.get_session(
         app_name="trpc-agent-service",
@@ -328,7 +336,8 @@ async def test_trpc_agent_runner_does_not_answer_the_previous_turn_again() -> No
         ),
     )
 
-    result = await TRPCAgentRunner(AmbiguitySensitiveSDKRunner()).run(
+    result = await _run_sdk_turn(
+        _sdk_runner(AmbiguitySensitiveSDKRunner()),
         context,
         UnusedToolInvoker(),
     )
@@ -361,7 +370,7 @@ async def test_trpc_agent_runner_injects_citable_tenant_knowledge() -> None:
         ), ),
     )
 
-    await TRPCAgentRunner(sdk_runner).run(context, UnusedToolInvoker())
+    await _run_sdk_turn(_sdk_runner(sdk_runner), context, UnusedToolInvoker())
 
     assert "[知识1] 员工每年享有十二天年假。" in sdk_runner.message
     assert "来源：leave-policy.md，第 2 版" in sdk_runner.message
@@ -376,7 +385,8 @@ async def test_trpc_agent_runner_does_not_expose_text_attachment_identifiers_to_
     context = _context()
     incoming = replace(context.request.incoming, artifact_refs=("secret-artifact-id", ))
 
-    await TRPCAgentRunner(sdk_runner).run(
+    await _run_sdk_turn(
+        _sdk_runner(sdk_runner),
         replace(context, request=replace(context.request, incoming=incoming)),
         UnusedToolInvoker(),
     )
@@ -398,7 +408,8 @@ async def test_trpc_runner_directs_bare_im_files_to_tenant_management() -> None:
         artifact_refs=("tenant-artifact-1", ),
     )
 
-    result = await TRPCAgentRunner(sdk_runner).run(
+    result = await _run_sdk_turn(
+        _sdk_runner(sdk_runner),
         replace(context, request=replace(context.request, incoming=incoming)),
         UnusedToolInvoker(),
     )
@@ -430,7 +441,7 @@ async def test_trpc_agent_runner_sends_tenant_image_bytes_to_multimodal_model() 
         ), ),
     )
 
-    await TRPCAgentRunner(sdk_runner).run(context, UnusedToolInvoker())
+    await _run_sdk_turn(_sdk_runner(sdk_runner), context, UnusedToolInvoker())
 
     assert sdk_runner.parts[0].text == "请描述这张图片。"
     assert sdk_runner.parts[1].inline_data is not None
@@ -447,17 +458,29 @@ async def test_trpc_agent_runner_fails_closed_on_invalid_or_empty_model_output()
     )
 
     with pytest.raises(ValueError, match="not resolved from tenant storage"):
-        await TRPCAgentRunner(RecordingSDKRunner()).run(replace(context, request=invalid_request),
-                                                        UnusedToolInvoker())
+        await _run_sdk_turn(
+            _sdk_runner(RecordingSDKRunner()),
+            replace(context, request=invalid_request),
+            UnusedToolInvoker(),
+        )
     with pytest.raises(RuntimeError, match="MODEL_ERROR"):
-        await TRPCAgentRunner(ErrorSDKRunner()).run(context, UnusedToolInvoker())
+        await _run_sdk_turn(
+            _sdk_runner(ErrorSDKRunner()),
+            context,
+            UnusedToolInvoker(),
+        )
     with pytest.raises(RuntimeError, match="no final text"):
-        await TRPCAgentRunner(EmptySDKRunner()).run(context, UnusedToolInvoker())
+        await _run_sdk_turn(
+            _sdk_runner(EmptySDKRunner()),
+            context,
+            UnusedToolInvoker(),
+        )
 
 
 @pytest.mark.anyio
 async def test_trpc_agent_runner_allows_sdk_to_recover_from_tool_errors() -> None:
-    result = await TRPCAgentRunner(RecoverableToolErrorSDKRunner()).run(
+    result = await _run_sdk_turn(
+        _sdk_runner(RecoverableToolErrorSDKRunner()),
         _context(),
         UnusedToolInvoker(),
     )
@@ -492,7 +515,9 @@ async def test_agent_factory_builds_bailian_runner_from_runtime_config(
         },
     )
 
-    runner = build_trpc_agent_runner(settings, runtime)
+    runner = TRPCAgentRunner(settings)
+    context = replace(_context(), config=runtime)
+    sdk_runtime = await runner._build_runtime(context, UnusedToolInvoker())
 
     assert isinstance(runner, TRPCAgentRunner)
     assert _resolve_secret(settings, "env://DASHSCOPE_API_KEY") == "dashscope-secret"
@@ -501,10 +526,11 @@ async def test_agent_factory_builds_bailian_runner_from_runtime_config(
         _resolve_secret(settings, "vault://models/key")
     with pytest.raises(RuntimeError, match="credential is empty"):
         _resolve_secret(settings, "env://MISSING_MODEL_KEY")
-    await runner.close()
+    await _close_sdk_runtime(sdk_runtime)
 
 
-def test_agent_factory_rejects_non_numeric_generation_parameters() -> None:
+@pytest.mark.anyio
+async def test_agent_runner_rejects_non_numeric_generation_parameters() -> None:
     settings = Settings(_env_file=None, dashscope_api_key=SecretStr("dashscope-secret"))
     invalid_temperature = AgentRuntimeConfig(
         config_version=1,
@@ -523,39 +549,46 @@ def test_agent_factory_rejects_non_numeric_generation_parameters() -> None:
         },
     )
 
+    runner = TRPCAgentRunner(settings)
     with pytest.raises(ValueError, match="temperature must be numeric"):
-        build_trpc_agent_runner(settings, invalid_temperature)
+        await runner._build_runtime(
+            replace(_context(), config=invalid_temperature),
+            UnusedToolInvoker(),
+        )
     with pytest.raises(ValueError, match="max_output_tokens must be numeric"):
-        build_trpc_agent_runner(settings, invalid_tokens)
+        await runner._build_runtime(
+            replace(_context(), config=invalid_tokens),
+            UnusedToolInvoker(),
+        )
 
 
 @pytest.mark.anyio
-async def test_configured_runner_closes_request_scoped_sdk_runner(
+async def test_trpc_runner_closes_request_scoped_sdk_runner(
     monkeypatch: pytest.MonkeyPatch, ) -> None:
     closed = False
-    expected = AgentRunResult()
 
-    class StubRequestRunner:
-
-        async def run(
-            self,
-            context: AgentExecutionContext,
-            tools: AgentToolInvoker,
-        ) -> AgentRunResult:
-            del context, tools
-            return expected
+    class ClosingSDKRunner(RecordingSDKRunner):
 
         async def close(self) -> None:
             nonlocal closed
             closed = True
 
-    monkeypatch.setattr(
-        "trpc_service.agent.factory.build_trpc_agent_runner",
-        lambda settings, runtime_config, **kwargs: StubRequestRunner(),
-    )
-    runner = ConfiguredTRPCAgentRunner(Settings(_env_file=None))
+    sdk_runner = ClosingSDKRunner()
+    runner = TRPCAgentRunner(Settings(_env_file=None))
+
+    async def build_runtime(
+        context: AgentExecutionContext,
+        tools: AgentToolInvoker,
+    ) -> _SDKRuntime:
+        del context, tools
+        return _SDKRuntime(
+            runner=_sdk_runner(sdk_runner),
+            sessions=InMemorySessionService(),
+        )
+
+    monkeypatch.setattr(runner, "_build_runtime", build_runtime)
 
     result = await runner.run(_context(), UnusedToolInvoker())
 
-    assert result is expected
+    assert result.replies[0].text == "Agent 回复"
     assert closed is True

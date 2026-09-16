@@ -27,6 +27,7 @@ from trpc_service.channels.router import (
 )
 from trpc_service.channels.recovery_router import router as delivery_recovery_router
 from trpc_service.config import Settings, get_settings
+from trpc_service.container import ApplicationContainer, build_application_container
 from trpc_service.log import bind_log_context
 from trpc_service.mcp.router import router as mcp_connection_router
 from trpc_service.skill.router import router as skill_catalog_router
@@ -35,7 +36,6 @@ from trpc_service.storage.knowledge_router import router as tenant_knowledge_rou
 from trpc_service.storage.orm import Base
 from trpc_service.tenant.router import router as tenant_router
 from trpc_service.version import __version__
-from trpc_service.web.container import ApplicationContainer, build_application_container
 from trpc_service.web.errors import install_exception_handlers
 
 

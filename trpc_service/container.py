@@ -1,11 +1,16 @@
-"""Application composition root for independently implemented adapters."""
+"""Application composition root for all independently implemented adapters.
+
+This module lives at the package root because it wires Agent, Channel, Storage,
+MCP, telemetry, and process-lifecycle components.  No presentation layer owns
+that dependency graph.
+"""
 
 from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from trpc_service.agent.approval import ApprovalService
-from trpc_service.agent.factory import ConfiguredTRPCAgentRunner
+from trpc_service.agent.adapters.trpc import TRPCAgentRunner
 from trpc_service.agent.nodes import (
     PostgreSQLRuntimeNodeRegistry,
     RuntimeNodeHeartbeatService,
@@ -170,7 +175,7 @@ def build_application_container(
     feishu_adapter = FeishuChannelAdapter(feishu_transports, channel_media)
     channels.register(wecom_adapter)
     channels.register(feishu_adapter)
-    runtime_runner = agent_runner or ConfiguredTRPCAgentRunner(
+    runtime_runner = agent_runner or TRPCAgentRunner(
         app_settings,
         mcp=mcp,
         skills=skills,

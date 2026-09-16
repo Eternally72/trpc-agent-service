@@ -15,7 +15,7 @@ from trpc_service.agent import (
 )
 from trpc_service.agent.approval import ApprovalRequestSnapshot, ApprovalStatus
 from trpc_service.agent.adapters.trpc_tools import TRPCToolBridge
-from trpc_service.agent.factory import build_trpc_agent_runner
+from trpc_service.agent.adapters.trpc import TRPCAgentRunner, _close_sdk_runtime
 from trpc_service.agent.governance import GovernedToolInvoker, ToolApprovalRequired
 from trpc_service.config import Settings
 from trpc_service.tool import BuiltinToolInvoker
@@ -359,11 +359,7 @@ async def test_agent_factory_registers_allowlisted_functions_as_sdk_tools() -> N
     )
     invoker = GovernedToolInvoker(BuiltinToolInvoker())
 
-    runner = build_trpc_agent_runner(
-        Settings(_env_file=None, dashscope_api_key=SecretStr("test-key")),
-        context.config,
-        execution_context=context,
-        tool_invoker=invoker,
-    )
+    runner = TRPCAgentRunner(Settings(_env_file=None, dashscope_api_key=SecretStr("test-key")))
+    runtime = await runner._build_runtime(context, invoker)
 
-    await runner.close()
+    await _close_sdk_runtime(runtime)

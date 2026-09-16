@@ -21,7 +21,7 @@ from trpc_service.agent.scaling import (
     WorkerPoolController,
 )
 from trpc_service.storage import build_engine, build_session_factory
-from trpc_service.web.container import build_application_container
+from trpc_service.container import build_application_container
 
 
 def _safe_log_config(settings=None) -> dict[str, object]:  # type: ignore[no-untyped-def]

@@ -1,8 +1,8 @@
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from trpc_service.config import Settings
+from trpc_service.container import ApplicationContainer, build_application_container
 from trpc_service.web import create_app
-from trpc_service.web.container import ApplicationContainer, build_application_container
 from trpc_service.workspace import LocalWorkspaceProvider, WorkspaceProvider
 
 

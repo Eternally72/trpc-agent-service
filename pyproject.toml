@@ -88,7 +88,8 @@ exclude = "^trpc_service/storage/migrations/"
 
 [[tool.mypy.overrides]]
 # The SDK currently ships source annotations without a PEP 561 py.typed marker.
-# Project-owned Protocols keep the boundary typed while mypy ignores that marker gap.
+# The tRPC adapter imports its concrete SDK types at one boundary while mypy
+# ignores only the dependency's missing distribution marker.
 module = ["trpc_agent_sdk.*"]
 ignore_missing_imports = true
 
