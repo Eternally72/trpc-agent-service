@@ -52,7 +52,7 @@
             state.actor = null; state.token = "";
             document.querySelectorAll("dialog[open]").forEach((dialog) => dialog.close());
             $("#app-shell").hidden = true; $("#login-shell").hidden = false;
-            setLoginError("登录已过期，请重新登录。未提交的表单仍为你保留。");
+            setLoginError("登录已过期，请重新登录。");
           }
           throw error;
         }
@@ -101,10 +101,15 @@
         const button = document.createElement("button"); button.type = "button"; button.className = "button secondary small";
         button.textContent = text; button.disabled = disabled;
         button.addEventListener("click", async () => {
-          pager.querySelectorAll("button").forEach((item) => { item.disabled = true; });
+          const buttons = [...pager.querySelectorAll("button")];
+          const previousDisabled = buttons.map((item) => item.disabled);
+          buttons.forEach((item) => { item.disabled = true; });
           pages.set(key, next);
           try { await reload(); }
-          catch (error) { pages.set(key, offset); toast(error.message, "error"); await api.page(path, rowId, reload).catch(() => {}); }
+          catch (error) {
+            pages.set(key, offset); toast(error.message, "error");
+            buttons.forEach((item, index) => { item.disabled = previousDisabled[index]; });
+          }
         });
         pager.append(button);
       }

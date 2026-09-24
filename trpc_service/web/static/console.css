@@ -1,7 +1,7 @@
 :root {
   color: #172033;
   background: #f3f6fa;
-  font-family: "HarmonyOS Sans SC", "Noto Sans SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-family: "HarmonyOS Sans SC", "Noto Sans SC", "Noto Sans CJK SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   --ink: #20364d;
@@ -230,7 +230,7 @@ button:disabled { cursor: not-allowed; }
 .data-surface table th { position: sticky; top: 0; z-index: 1; }
 .dialog-head { position: sticky; top: 0; z-index: 2; background: #fff; }
 .dialog-actions { position: sticky; bottom: -24px; margin: 4px -24px -24px; padding: 18px 24px; border-top: 1px solid var(--line); background: #fff; }
-.login-story h1 { font-size: clamp(34px, 3.7vw, 54px); line-height: 1.25; letter-spacing: -.035em; }
+.login-story h1 { font-size: clamp(34px, 3.7vw, 54px); line-height: 1.25; letter-spacing: -.035em; text-wrap: balance; }
 .login-story .product-mark { margin-bottom: 48px; }
 .login-panel { background: #fff; }
 .login-card { padding: 20px 0; }

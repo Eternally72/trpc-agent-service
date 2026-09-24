@@ -161,7 +161,7 @@ class Settings(BaseSettings):
 
         # Isolated SQLite fixtures intentionally exercise in-memory adapters.
         primary = make_url(self.database_url)
-        if primary.get_backend_name() == "sqlite" and self.environment != "production":
+        if primary.get_backend_name() == "sqlite" and self.environment.casefold() != "production":
             return
         profile = StorageProfileConfig.model_validate(
             dict(configured) or self.storage_profile.model_dump())

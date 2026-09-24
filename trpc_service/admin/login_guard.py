@@ -19,7 +19,13 @@ async def password_work(operation: Callable[..., T], *args: str) -> T:
     try:
         return await asyncio.shield(task)
     except asyncio.CancelledError:
-        await task
+        # Repeated cancellation must not release the caller's admission slot
+        # while the uncancellable executor thread is still using KDF resources.
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue
         raise
 
 

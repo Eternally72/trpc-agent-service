@@ -14,10 +14,12 @@ from trpc_agent_sdk.tools.mcp_tool._mcp_session_manager import MCPSessionManager
 class PinnedMCPTransport(httpx.AsyncHTTPTransport):
     """Resolve once at the policy boundary, never again at socket connection time."""
 
-    def __init__(self, endpoint: str, address: str) -> None:
+    def __init__(self, endpoint: str, addresses: tuple[str, ...]) -> None:
         super().__init__(retries=0, trust_env=False)
+        if not addresses:
+            raise ValueError("MCP requires a validated destination address")
         self._endpoint = httpx.URL(endpoint)
-        self._address = address
+        self._addresses = addresses
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         if (request.url.scheme != "https" or request.url.host != self._endpoint.host
@@ -25,16 +27,24 @@ class PinnedMCPTransport(httpx.AsyncHTTPTransport):
             raise PermissionError("MCP transport cannot change its authorized origin")
         headers = request.headers.copy()
         headers["Host"] = self._endpoint.netloc.decode("ascii")
-        pinned = httpx.Request(
-            request.method,
-            request.url.copy_with(host=self._address),
-            headers=headers,
-            content=request.stream,
-            extensions={
-                **request.extensions, "sni_hostname": self._endpoint.host
-            },
-        )
-        return await super().handle_async_request(pinned)
+        for index, address in enumerate(self._addresses):
+            pinned = httpx.Request(
+                request.method,
+                request.url.copy_with(host=address),
+                headers=headers,
+                content=request.stream,
+                extensions={
+                    **request.extensions, "sni_hostname": self._endpoint.host
+                },
+            )
+            try:
+                return await super().handle_async_request(pinned)
+            except (httpx.ConnectError, httpx.ConnectTimeout):
+                # Only retry failures before request bytes are sent. Retrying a
+                # read/write failure could execute a remote write twice.
+                if index == len(self._addresses) - 1:
+                    raise
+        raise AssertionError("validated addresses cannot be empty")
 
 
 class PinnedMCPSessionManager(MCPSessionManager):  # type: ignore[misc]
@@ -45,7 +55,7 @@ class PinnedMCPSessionManager(MCPSessionManager):  # type: ignore[misc]
         if not addresses:
             raise ValueError("MCP requires a validated destination address")
         self._params = params
-        self._address = addresses[0]
+        self._addresses = addresses
 
     @asynccontextmanager
     async def _create_streamable_http_client(
@@ -55,7 +65,7 @@ class PinnedMCPSessionManager(MCPSessionManager):  # type: ignore[misc]
         timeout = self._params.timeout
         seconds = timeout.total_seconds() if isinstance(timeout, timedelta) else float(timeout)
         async with httpx.AsyncClient(
-                transport=PinnedMCPTransport(self._params.url, self._address),
+                transport=PinnedMCPTransport(self._params.url, self._addresses),
                 headers=merged_headers,
                 timeout=httpx.Timeout(seconds),
                 follow_redirects=False,
