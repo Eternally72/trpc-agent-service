@@ -174,7 +174,7 @@ def main() -> None:
         asyncio.run(_run_background_role())
         return
     uvicorn.run(
-        "trpc_service.web.app:create_app",
+        "trpc_service.web.app:create_default_app",
         factory=True,
         host=settings.host,
         port=settings.port,

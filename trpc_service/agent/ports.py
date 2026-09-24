@@ -2,6 +2,7 @@
 
 from abc import ABC, abstractmethod
 from datetime import datetime
+from typing import Protocol
 from uuid import UUID
 
 from trpc_service.agent.contracts import (
@@ -163,10 +164,14 @@ class AgentContextBuilder(ABC):
         ...
 
 
-class AgentRunner(ABC):
-    """Execute one Agent through tRPC-Agent-Python or another registered runtime."""
+class AgentRunner(Protocol):
+    """Structural contract used by the pipeline and its observability wrapper.
 
-    @abstractmethod
+    The production implementation is :class:`TRPCAgentRunner`.  This remains a
+    protocol instead of an abstract base class so the tRPC adapter does not need
+    to inherit a project-owned runtime hierarchy merely to expose ``run``.
+    """
+
     async def run(
         self,
         context: AgentExecutionContext,

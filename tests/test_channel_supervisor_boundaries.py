@@ -229,10 +229,11 @@ async def test_feishu_supervisor_reconciles_database_and_callback_lifecycle(
     with pytest.raises(ValueError, match="interval"):
         FeishuBindingSupervisor(
             sessions,
-            FeishuChannelAdapter(),
+            FeishuChannelAdapter(FeishuTransportRegistry()),
             FeishuTransportRegistry(),
             messages,  # type: ignore[arg-type]
             _telemetry(),
+            client_factory=factory,
             poll_interval_seconds=0,
         )
 
@@ -281,7 +282,7 @@ async def test_feishu_supervisor_handles_pending_secret_connect_failure_and_task
     messages = _Messages()
     supervisor = FeishuBindingSupervisor(
         sessions,
-        FeishuChannelAdapter(),
+        FeishuChannelAdapter(FeishuTransportRegistry()),
         FeishuTransportRegistry(),
         messages,  # type: ignore[arg-type]
         _telemetry(),
@@ -345,10 +346,11 @@ async def test_wecom_supervisor_reconciles_database_and_callback_lifecycle(
     with pytest.raises(ValueError, match="interval"):
         WeComBindingSupervisor(
             sessions,
-            WeComChannelAdapter(),
+            WeComChannelAdapter(WeComTransportRegistry()),
             WeComTransportRegistry(),
             messages,  # type: ignore[arg-type]
             _telemetry(),
+            client_factory=factory,
             poll_interval_seconds=0,
         )
 
@@ -391,7 +393,7 @@ async def test_wecom_supervisor_survives_connection_failure_and_task_loop(
     monkeypatch.setenv(secret_name, "wecom-secret")
     supervisor = WeComBindingSupervisor(
         sessions,
-        WeComChannelAdapter(),
+        WeComChannelAdapter(WeComTransportRegistry()),
         WeComTransportRegistry(),
         _Messages(),  # type: ignore[arg-type]
         _telemetry(),

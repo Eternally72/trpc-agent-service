@@ -33,11 +33,11 @@ class TRPCToolBridge:
         self,
         context: AgentExecutionContext,
         invoker: AgentToolInvoker,
-        sequence: CapabilityCallSequence | None = None,
+        sequence: CapabilityCallSequence,
     ) -> None:
         self._context = context
         self._invoker = invoker
-        self._sequence = sequence or CapabilityCallSequence()
+        self._sequence = sequence
 
     def _enabled_tools(self) -> frozenset[str]:
         """Resolve visible Tool names from the unified or legacy policy shape."""

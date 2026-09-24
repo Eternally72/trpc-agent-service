@@ -115,7 +115,7 @@ class WeComBindingSupervisor:
         messages: WeComMessageService,
         telemetry: PlatformTelemetry,
         *,
-        client_factory: WeComClientFactory | None = None,
+        client_factory: WeComClientFactory,
         poll_interval_seconds: float = 5.0,
         secret_store: TenantSecretStore | None = None,
     ) -> None:
@@ -126,7 +126,7 @@ class WeComBindingSupervisor:
         self._transports = transports
         self._messages = messages
         self._telemetry = telemetry
-        self._client_factory = client_factory or SDKWeComClientFactory()
+        self._client_factory = client_factory
         self._secret_store = secret_store
         self._poll_interval_seconds = poll_interval_seconds
         self._connections: dict[UUID, _Connection] = {}

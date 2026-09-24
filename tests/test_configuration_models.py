@@ -37,6 +37,45 @@ def test_settings_support_a_clean_process_import() -> None:
     assert result.returncode == 0, result.stderr
 
 
+def test_mcp_models_support_a_clean_process_import() -> None:
+    """Keep Alembic model discovery independent from runtime adapter imports."""
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import trpc_service.mcp.models",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_agent_adapter_compatibility_exports_are_lazy_and_importable() -> None:
+    """Preserve package exports without eagerly rebuilding the import cycle."""
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from trpc_service.agent.adapters import "
+                "TRPCAgentRunner, TRPCToolBridge"
+            ),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_secret_ref_accepts_reference_uris_without_resolving_a_secret() -> None:
     reference = SecretRef(uri="vault://tenant-a/models/primary")
 

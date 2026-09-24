@@ -25,7 +25,7 @@ from trpc_service.agent.contracts import (
     AgentRunResult,
     AgentUsage,
 )
-from trpc_service.agent.ports import AgentRunner, AgentToolInvoker
+from trpc_service.agent.ports import AgentToolInvoker
 from trpc_service.channels.contracts import MessageKind
 from trpc_service.config import Settings
 from trpc_service.mcp import TenantMCPService
@@ -222,7 +222,7 @@ async def _run_sdk_turn(
             session_id=scoped_session_id,
             new_message=content,
             run_config=RunConfig(save_history_enabled=True),
-    ):
+    ): 
         if event.is_error():
             # Tool errors are model-visible function responses. Let the model
             # correct its call; provider/model errors still fail closed.
@@ -283,7 +283,7 @@ async def _close_sdk_runtime(runtime: _SDKRuntime) -> None:
         await result
 
 
-class TRPCAgentRunner(AgentRunner):
+class TRPCAgentRunner:
     """Build and execute the tenant-scoped tRPC SDK Runner for each request."""
 
     def __init__(
@@ -291,11 +291,11 @@ class TRPCAgentRunner(AgentRunner):
         settings: Settings,
         *,
         mcp: TenantMCPService | None = None,
-        skills: BuiltinSkillCatalog | None = None,
+        skills: BuiltinSkillCatalog,
     ) -> None:
         self._settings = settings
         self._mcp = mcp
-        self._skills = skills or BuiltinSkillCatalog()
+        self._skills = skills
 
     async def _build_runtime(
         self,

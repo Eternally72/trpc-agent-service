@@ -19,6 +19,10 @@ _MAX_WORKSPACE_RESULTS = 200
 _MAX_WORKSPACE_SCAN_ENTRIES = 2_000
 
 
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 def _resolve_public_addresses(host: str) -> tuple[str, ...]:
     return tuple(
         {str(entry[4][0])
@@ -34,14 +38,14 @@ class EnterpriseToolInvoker(AgentToolInvoker):
         self,
         workspace: WorkspaceProvider,
         *,
-        http_client: httpx.AsyncClient | None = None,
-        clock: Callable[[], datetime] | None = None,
-        resolve_host: Callable[[str], Sequence[str]] | None = None,
+        http_client: httpx.AsyncClient,
+        clock: Callable[[], datetime] = _utc_now,
+        resolve_host: Callable[[str], Sequence[str]] = _resolve_public_addresses,
     ) -> None:
         self._workspace = workspace
         self._http_client = http_client
-        self._clock = clock or (lambda: datetime.now(timezone.utc))
-        self._resolve_host = resolve_host or _resolve_public_addresses
+        self._clock = clock
+        self._resolve_host = resolve_host
 
     async def invoke(
         self,
@@ -127,16 +131,11 @@ class EnterpriseToolInvoker(AgentToolInvoker):
                     or ip.is_reserved or ip.is_unspecified):
                 raise PermissionError("http.get host resolved to a non-public address")
 
-        if self._http_client is None:
-            async with httpx.AsyncClient(timeout=10, follow_redirects=False) as client:
-                response = await client.get(raw_url,
-                                            headers={"Accept": "application/json,text/plain"})
-        else:
-            response = await self._http_client.get(
-                raw_url,
-                headers={"Accept": "application/json,text/plain"},
-                follow_redirects=False,
-            )
+        response = await self._http_client.get(
+            raw_url,
+            headers={"Accept": "application/json,text/plain"},
+            follow_redirects=False,
+        )
         if response.status_code >= 400:
             raise RuntimeError(f"http.get provider returned status {response.status_code}")
         if len(response.content) > _MAX_HTTP_BYTES:

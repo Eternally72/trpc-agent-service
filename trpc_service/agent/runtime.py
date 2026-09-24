@@ -3,6 +3,7 @@
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 import hashlib
+import httpx
 import json
 import logging
 from time import perf_counter
@@ -72,7 +73,7 @@ from trpc_service.tool import (
     EnterpriseToolInvoker,
     KnowledgeToolInvoker,
 )
-from trpc_service.workspace import LocalWorkspaceProvider, WorkspaceProvider
+from trpc_service.workspace import WorkspaceProvider
 
 logger = logging.getLogger(__name__)
 
@@ -825,16 +826,17 @@ def build_local_agent_pipeline(
     storage: StorageRouter,
     runner: AgentRunner,
     telemetry: PlatformTelemetry,
-    config_provider: AgentConfigProvider | None = None,
-    approvals: ApprovalService | None = None,
-    usage_recorder: UsageRecorder | None = None,
-    knowledge_service: TenantKnowledgeService | None = None,
-    tool_ledger: ToolLedger | None = None,
-    workspace_provider: WorkspaceProvider | None = None,
-    mcp_service: AgentToolInvoker | None = None,
+    config_provider: AgentConfigProvider,
+    approvals: ApprovalService,
+    usage_recorder: UsageRecorder,
+    knowledge_service: TenantKnowledgeService,
+    tool_ledger: ToolLedger,
+    workspace_provider: WorkspaceProvider,
+    mcp_service: AgentToolInvoker,
+    http_client: httpx.AsyncClient,
     session_cache: SessionSnapshotCache | None = None,
 ) -> AgentExecutionPipeline:
-    """Compose the concrete Agent chain around stable abstract ports."""
+    """Compose the concrete Agent chain from explicit production components."""
 
     redactor = SensitiveDataRedactor()
     audit = StorageAuditRecorder(storage, redactor)
@@ -847,18 +849,12 @@ def build_local_agent_pipeline(
     )
     builtin_tools = BuiltinToolInvoker()
     tool_routes: dict[str, AgentToolInvoker] = {"calculate": builtin_tools}
-    workspace = workspace_provider or LocalWorkspaceProvider(
-        settings.workspace_root,
-        retention_seconds=settings.workspace_retention_seconds,
-        cleanup_interval_seconds=settings.workspace_cleanup_interval_seconds,
-    )
-    enterprise_tools = EnterpriseToolInvoker(workspace)
+    enterprise_tools = EnterpriseToolInvoker(workspace_provider, http_client=http_client)
     tool_routes.update({name: enterprise_tools for name in enterprise_tools.TOOL_NAMES})
-    if knowledge_service is not None:
-        knowledge_tools = KnowledgeToolInvoker(knowledge_service)
-        tool_routes.update({name: knowledge_tools for name in knowledge_tools.TOOL_NAMES})
+    knowledge_tools = KnowledgeToolInvoker(knowledge_service)
+    tool_routes.update({name: knowledge_tools for name in knowledge_tools.TOOL_NAMES})
     return AgentExecutionPipeline(
-        config_provider=config_provider or SettingsAgentConfigProvider(settings),
+        config_provider=config_provider,
         coordinator=StorageExecutionCoordinator(
             storage,
             lease_seconds=settings.worker_lease_seconds,
@@ -889,5 +885,5 @@ def build_local_agent_pipeline(
         committer=StorageResultCommitter(storage, telemetry, session_cache),
         publisher=DeferredOutboxPublisher(),
         usage_recorder=usage_recorder,
-        workspace_provider=workspace,
+        workspace_provider=workspace_provider,
     )

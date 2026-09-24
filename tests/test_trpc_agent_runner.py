@@ -33,6 +33,7 @@ from trpc_service.agent.adapters.trpc import (
 )
 from trpc_service.channels import ChannelBindingConfig, IncomingMessage, MessageKind
 from trpc_service.config import Settings
+from trpc_service.skill import BuiltinSkillCatalog
 from trpc_service.storage import (
     KnowledgeDocument,
     KnowledgeHit,
@@ -515,7 +516,7 @@ async def test_agent_factory_builds_bailian_runner_from_runtime_config(
         },
     )
 
-    runner = TRPCAgentRunner(settings)
+    runner = TRPCAgentRunner(settings, skills=BuiltinSkillCatalog())
     context = replace(_context(), config=runtime)
     sdk_runtime = await runner._build_runtime(context, UnusedToolInvoker())
 
@@ -549,7 +550,7 @@ async def test_agent_runner_rejects_non_numeric_generation_parameters() -> None:
         },
     )
 
-    runner = TRPCAgentRunner(settings)
+    runner = TRPCAgentRunner(settings, skills=BuiltinSkillCatalog())
     with pytest.raises(ValueError, match="temperature must be numeric"):
         await runner._build_runtime(
             replace(_context(), config=invalid_temperature),
@@ -574,7 +575,7 @@ async def test_trpc_runner_closes_request_scoped_sdk_runner(
             closed = True
 
     sdk_runner = ClosingSDKRunner()
-    runner = TRPCAgentRunner(Settings(_env_file=None))
+    runner = TRPCAgentRunner(Settings(_env_file=None), skills=BuiltinSkillCatalog())
 
     async def build_runtime(
         context: AgentExecutionContext,

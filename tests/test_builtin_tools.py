@@ -14,11 +14,16 @@ from trpc_service.agent import (
     AgentToolResult,
 )
 from trpc_service.agent.approval import ApprovalRequestSnapshot, ApprovalStatus
-from trpc_service.agent.adapters.trpc_tools import TRPCToolBridge
+from trpc_service.agent.adapters.trpc_tools import CapabilityCallSequence, TRPCToolBridge
 from trpc_service.agent.adapters.trpc import TRPCAgentRunner, _close_sdk_runtime
 from trpc_service.agent.governance import GovernedToolInvoker, ToolApprovalRequired
 from trpc_service.config import Settings
+from trpc_service.skill import BuiltinSkillCatalog
 from trpc_service.tool import BuiltinToolInvoker
+
+
+def _bridge(context, invoker):  # type: ignore[no-untyped-def]
+    return TRPCToolBridge(context, invoker, CapabilityCallSequence())
 
 
 @pytest.mark.anyio
@@ -100,7 +105,7 @@ async def test_trpc_tool_bridge_exposes_only_allowlisted_builtin_tools() -> None
     """The SDK can call platform Tools without bypassing tenant governance."""
 
     context = _context()
-    disabled = TRPCToolBridge(context, BuiltinToolInvoker())
+    disabled = _bridge(context, BuiltinToolInvoker())
     assert disabled.functions() == ()
 
     enabled_context = replace(
@@ -115,7 +120,7 @@ async def test_trpc_tool_bridge_exposes_only_allowlisted_builtin_tools() -> None
             },
         ),
     )
-    bridge = TRPCToolBridge(
+    bridge = _bridge(
         enabled_context,
         GovernedToolInvoker(BuiltinToolInvoker()),
     )
@@ -141,7 +146,7 @@ async def test_trpc_tool_bridge_exposes_only_allowlisted_builtin_tools() -> None
             },
         ),
     )
-    granted = TRPCToolBridge(
+    granted = _bridge(
         granted_context,
         GovernedToolInvoker(BuiltinToolInvoker()),
     ).functions()
@@ -184,7 +189,7 @@ async def test_trpc_tool_bridge_binds_knowledge_grants_to_the_selected_base() ->
             return AgentToolResult(call_id=call.call_id, content="matched")
 
     delegate = RecordingInvoker()
-    functions = TRPCToolBridge(context, GovernedToolInvoker(delegate)).functions()
+    functions = _bridge(context, GovernedToolInvoker(delegate)).functions()
 
     assert [function.__name__ for function in functions] == ["knowledge_search"]
     assert await functions[0](knowledge_base_name="handbook", query="年假") == {"result": "matched"}
@@ -213,7 +218,7 @@ async def test_trpc_tool_bridge_hides_knowledge_add_even_when_granted() -> None:
             },
         ),
     )
-    functions = TRPCToolBridge(
+    functions = _bridge(
         context,
         GovernedToolInvoker(BuiltinToolInvoker()),
     ).functions()
@@ -242,7 +247,7 @@ async def test_trpc_tool_bridge_hides_knowledge_add_without_an_upload() -> None:
             },
         ),
     )
-    functions = TRPCToolBridge(
+    functions = _bridge(
         context,
         GovernedToolInvoker(BuiltinToolInvoker()),
     ).functions()
@@ -279,7 +284,7 @@ async def test_trpc_tool_bridge_hides_knowledge_delete_even_for_a_file_message()
             },
         ),
     )
-    functions = TRPCToolBridge(
+    functions = _bridge(
         context,
         GovernedToolInvoker(BuiltinToolInvoker()),
     ).functions()
@@ -329,7 +334,7 @@ async def test_trpc_tool_bridge_returns_a_safe_pending_approval_to_the_model() -
             del runtime_context, call
             raise ToolApprovalRequired("approval required", approval=pending)
 
-    function = TRPCToolBridge(context, PendingInvoker()).functions()[0]
+    function = _bridge(context, PendingInvoker()).functions()[0]
 
     result = await function(expression="1 + 1")
 
@@ -359,7 +364,10 @@ async def test_agent_factory_registers_allowlisted_functions_as_sdk_tools() -> N
     )
     invoker = GovernedToolInvoker(BuiltinToolInvoker())
 
-    runner = TRPCAgentRunner(Settings(_env_file=None, dashscope_api_key=SecretStr("test-key")))
+    runner = TRPCAgentRunner(
+        Settings(_env_file=None, dashscope_api_key=SecretStr("test-key")),
+        skills=BuiltinSkillCatalog(),
+    )
     runtime = await runner._build_runtime(context, invoker)
 
     await _close_sdk_runtime(runtime)

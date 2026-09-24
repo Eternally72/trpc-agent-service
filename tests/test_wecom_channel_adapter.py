@@ -1,11 +1,16 @@
 import json
 from dataclasses import replace
 from datetime import datetime, timezone
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import pytest
 
-from trpc_service.channels import ChannelBindingConfig, IncomingEnvelope, MessageKind
+from trpc_service.channels import (
+    ChannelBindingConfig,
+    IncomingEnvelope,
+    IncomingMessage,
+    MessageKind,
+)
 from trpc_service.channels.adapters.wecom import (
     WeComChannelAdapter,
     WeComTransportRegistry,
@@ -27,6 +32,7 @@ from trpc_service.channels.wecom_runtime import WeComBindingSupervisor
 from trpc_service.metrics import PlatformTelemetry
 from trpc_service.agent.models import AgentApp
 from trpc_service.channels.models import ChannelBinding
+from trpc_service.channels.identity import ResolvedChannelContext
 from trpc_service.agent.runtime import StorageResultCommitter
 from trpc_service.agent.recovery import ProviderOutcomeUnknown
 from trpc_service.storage import BackendProfile, ExecutionCommit, ResolvedStorage
@@ -94,7 +100,7 @@ async def test_wecom_adapter_normalizes_private_and_group_text(
 
     binding = _binding()
     frame = _frame(chat_type=chat_type, user_id=user_id, chat_id=chat_id)
-    adapter = WeComChannelAdapter()
+    adapter = WeComChannelAdapter(WeComTransportRegistry())
 
     incoming = await adapter.decode(
         IncomingEnvelope(
@@ -409,6 +415,42 @@ class _RecordingTaskQueue:
         return "task-001"
 
 
+class _PassThroughApprovalCommands:
+
+    async def process(
+        self,
+        incoming: IncomingMessage,
+        binding: ChannelBindingConfig,
+        session_id: str,
+    ) -> IncomingMessage:
+        del binding, session_id
+        return incoming
+
+
+class _DeterministicIdentityService:
+
+    async def resolve(
+        self,
+        binding: ChannelBindingConfig,
+        incoming: IncomingMessage,
+    ) -> ResolvedChannelContext:
+        return ResolvedChannelContext(
+            principal_id=uuid5(NAMESPACE_URL, incoming.principal_id),
+            conversation_id=uuid5(NAMESPACE_URL, incoming.conversation_id),
+            session_id=f"{binding.binding_id}:{incoming.conversation_id}",
+        )
+
+
+def _message_service(adapter, queue, telemetry):  # type: ignore[no-untyped-def]
+    return WeComMessageService(
+        adapter,
+        queue,
+        telemetry,
+        _PassThroughApprovalCommands(),
+        _DeterministicIdentityService(),
+    )
+
+
 @pytest.mark.anyio
 async def test_wecom_message_service_durably_enqueues_before_progress_reply() -> None:
     """The SDK callback returns only after ownership moved to the SQL queue."""
@@ -419,9 +461,9 @@ async def test_wecom_message_service_durably_enqueues_before_progress_reply() ->
     transports.register(binding.binding_id, client)
     adapter = WeComChannelAdapter(transports)
     queue = _RecordingTaskQueue()
-    service = WeComMessageService(
+    service = _message_service(
         adapter,
-        queue,  # type: ignore[arg-type]
+        queue,
         PlatformTelemetry(
             service_name="test",
             environment="test",
@@ -494,7 +536,7 @@ async def test_wecom_supervisor_connects_active_binding_and_routes_callback(
         None,  # type: ignore[arg-type]
         adapter,
         transports,
-        WeComMessageService(adapter, queue, telemetry),  # type: ignore[arg-type]
+        _message_service(adapter, queue, telemetry),
         telemetry,
         client_factory=factory,
     )

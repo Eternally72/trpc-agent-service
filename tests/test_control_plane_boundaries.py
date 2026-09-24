@@ -109,6 +109,7 @@ async def test_model_catalog_and_credential_full_lifecycle(api_client: httpx.Asy
     updated_catalog = await api_client.patch(
         f"/api/v1/admin/model-catalog/{catalog.json()['model_catalog_id']}",
         json={
+            "model_name": "qwen-control-boundary-v2",
             "status": "disabled",
             "capabilities": {
                 "text": True
@@ -143,18 +144,25 @@ async def test_model_catalog_and_credential_full_lifecycle(api_client: httpx.Asy
         },
     )
     credentials = await api_client.get("/api/v1/admin/model-credentials")
+    deleted_catalog = await api_client.delete(
+        f"/api/v1/admin/model-catalog/{catalog.json()['model_catalog_id']}")
+    deleted_credential = await api_client.delete(
+        f"/api/v1/admin/model-credentials/{credential.json()['model_credential_id']}")
     missing = await api_client.patch(f"/api/v1/admin/model-credentials/{uuid4()}",
                                      json={"status": "disabled"})
 
     assert catalog.status_code == 201
     assert catalog.json()["platform_credential_configured"] is True
     assert duplicate_catalog.status_code == 409
+    assert updated_catalog.json()["model_name"] == "qwen-control-boundary-v2"
     assert updated_catalog.json()["status"] == "disabled"
     assert catalogs.json()["total"] == 1
     assert credential.status_code == 201
     assert duplicate_credential.status_code == 409
     assert conflict.status_code == 409
     assert updated_credential.json()["status"] == "disabled"
+    assert deleted_catalog.status_code == 204
+    assert deleted_credential.status_code == 204
     assert credentials.json()["total"] == 2
     assert all("secret_ref" not in item for item in credentials.json()["items"])
     assert missing.status_code == 404
@@ -199,8 +207,21 @@ async def test_model_profile_rejects_inactive_dependencies_and_invalid_budgets(
         json={"credential_id": missing},
     )
 
+    replacement_catalog = await api_client.post(
+        "/api/v1/admin/model-catalog",
+        json={
+            "provider": "bailian",
+            "model_name": "qwen-profile-replacement",
+            "display_name": "Qwen Profile Replacement",
+        },
+    )
+    changed_model = await api_client.patch(
+        f"/api/v1/tenants/{tenant_id}/model-profiles/{profile['model_profile_id']}",
+        json={"model_catalog_id": replacement_catalog.json()["model_catalog_id"]},
+    )
+
     await api_client.patch(
-        f"/api/v1/admin/model-catalog/{catalog['model_catalog_id']}",
+        f"/api/v1/admin/model-catalog/{replacement_catalog.json()['model_catalog_id']}",
         json={"status": "disabled"},
     )
     await api_client.delete(
@@ -216,7 +237,44 @@ async def test_model_profile_rejects_inactive_dependencies_and_invalid_budgets(
     assert duplicate.status_code == 409
     assert too_small_daily_budget.status_code == 409
     assert missing_credential.status_code == 409
+    assert changed_model.status_code == 200
+    assert changed_model.json()["model_catalog_id"] == replacement_catalog.json()[
+        "model_catalog_id"]
     assert inactive_catalog.status_code == 409
+
+
+@pytest.mark.anyio
+async def test_platform_admin_can_reassign_agent_model_profile(
+    api_client: httpx.AsyncClient,
+) -> None:
+    """The console workflow updates Agent policy before retiring an old profile."""
+
+    tenant = await _tenant(api_client, "Agent Model Assignment")
+    tenant_id = str(tenant["tenant_id"])
+    _, _, first_profile = await _model_resources(api_client, tenant_id, "assignment-one")
+    _, _, second_profile = await _model_resources(api_client, tenant_id, "assignment-two")
+    agent = await _agent(api_client, tenant_id, "Assignment Agent")
+    agent_id = str(agent["agent_app_id"])
+
+    assigned = await api_client.patch(
+        f"/api/v1/tenants/{tenant_id}/agents/{agent_id}",
+        json={"model_profile_id": second_profile["model_profile_id"]},
+    )
+    protected = await api_client.delete(
+        f"/api/v1/tenants/{tenant_id}/model-profiles/{second_profile['model_profile_id']}")
+    restored = await api_client.patch(
+        f"/api/v1/tenants/{tenant_id}/agents/{agent_id}",
+        json={"model_profile_id": first_profile["model_profile_id"]},
+    )
+    removed = await api_client.delete(
+        f"/api/v1/tenants/{tenant_id}/model-profiles/{second_profile['model_profile_id']}")
+
+    assert assigned.status_code == 200
+    assert assigned.json()["model_profile_id"] == second_profile["model_profile_id"]
+    assert assigned.json()["stable_config_version"] == agent["stable_config_version"] + 1
+    assert protected.status_code == 409
+    assert restored.status_code == 200
+    assert removed.status_code == 204
 
 
 @pytest.mark.anyio

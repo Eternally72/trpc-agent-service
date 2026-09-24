@@ -67,7 +67,10 @@ def test_knowledge_components_reject_invalid_limits_and_composition() -> None:
         TextChunker(chunk_size=10, overlap=10)
     assert TextChunker().split("   ") == ()
     with pytest.raises(ValueError, match="limit and ingestion lease"):
-        TenantKnowledgeService(None, max_file_bytes=0)  # type: ignore[arg-type]
+        TenantKnowledgeService(
+            None,  # type: ignore[arg-type]
+            max_file_bytes=0,
+        )
     with pytest.raises(ValueError, match="fixed stores or a storage router"):
         TenantKnowledgeService(None)  # type: ignore[arg-type]
 

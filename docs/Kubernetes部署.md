@@ -38,7 +38,7 @@ flowchart TB
 
 ## 部署
 
-首次部署并保留当前 Compose 数据时，先停止宿主机进程，再只启动源 PostgreSQL：
+首次部署且需要导入 Compose 的 PostgreSQL 数据时，先停止宿主机进程，再只启动源 PostgreSQL：
 
 ```bash
 ./stop.sh
@@ -46,6 +46,8 @@ docker compose up --detach --wait postgres
 ./deploy/kubernetes/deploy.sh --import-compose-data
 docker compose down
 ```
+
+`--import-compose-data` **仅迁移 PostgreSQL**，不会复制 SeaweedFS 对象、Redis 缓存或本地 Workspace 文件。若旧知识库仍引用 Compose 中的对象文件，需另行迁移对象存储或在 Kubernetes 租户控制台重新上传；不能把数据库导入成功视为知识库文件也已迁移。
 
 后续更新直接执行：
 
@@ -63,7 +65,7 @@ TRPC_K8S_REUSE_IMAGE=trpc-agent-service:<已有标签> ./deploy/kubernetes/deplo
 
 脚本会使用项目 `Dockerfile` 构建 Python 3.12 应用镜像、同步平台 Secret、创建 ConfigMap、启动存储和监控、执行 Alembic Job，并滚动部署应用角色。每次重新部署都会重启依赖 ConfigMap 的可观测组件，并将 PostgreSQL、Grafana 持久化密码与最新 Secret 同步，避免 Pod 继续使用旧配置或旧密码。发布成功后，只清理未被当前 Namespace 中任何 Pod 引用的旧 `trpc-agent-service` 镜像。真实密钥只从已忽略的 `.env` 和 `.secrets/` 读取，不写入部署清单。首次以 Kubernetes 启动时会生成并持久保留租户 SecretStore 主密钥。
 
-新建或更新的 IM Binding 由租户管理员在 `/tenant` 中配置，密钥以数据库密文保存。部署脚本仍兼容迁移前的本地文件型 SecretRef，便于已有 Binding 平滑切换；通过管理台重新保存密钥后不再依赖对应文件。
+新建或更新的 IM Binding 由租户管理员在 `/tenant` 中配置，密钥以数据库密文保存。部署脚本**不会**把旧的本地文件型 IM SecretRef 挂载进 Pod；如导入的旧 Binding 仍引用这类文件，部署后需在租户控制台重新保存密钥，使其转为数据库密文，否则对应 IM 长连接无法使用。
 
 当前清单已经覆盖 Redis 近期会话缓存、PostgreSQL/pgvector 持久事实与向量、SeaweedFS Artifact（S3 入口和内部 Volume 数据通道）、租户加密 IM/MCP 凭据、Skill 文件、MCP 出站调用、动态 Worker 扩缩容，以及 Prometheus、Grafana、Tempo、Loki、Alloy 全链路可观测。上述应用能力都随同一镜像和共享配置发布，不需要为 Skill、MCP 或新的 IM Adapter 单独增加 Pod。
 

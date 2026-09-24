@@ -2,7 +2,7 @@ import httpx
 import pytest
 
 from trpc_service.config import Settings
-from trpc_service.web import create_app
+from tests.conftest import create_test_app
 
 
 @pytest.mark.anyio
@@ -12,7 +12,7 @@ async def test_health_reports_service_identity() -> None:
         database_url="sqlite+aiosqlite:///:memory:",
         auto_create_schema=True,
     )
-    app = create_app(settings)
+    app = create_test_app(settings)
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -35,7 +35,7 @@ async def test_readiness_checks_database_connection() -> None:
         database_url="sqlite+aiosqlite:///:memory:",
         auto_create_schema=True,
     )
-    app = create_app(settings)
+    app = create_test_app(settings)
     transport = httpx.ASGITransport(app=app)
 
     async with app.router.lifespan_context(app):

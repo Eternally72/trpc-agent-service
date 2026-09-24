@@ -5,8 +5,11 @@ MCP, telemetry, and process-lifecycle components.  No presentation layer owns
 that dependency graph.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
+from inspect import isawaitable
 
+import httpx
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from trpc_service.agent.approval import ApprovalService
@@ -34,9 +37,9 @@ from trpc_service.channels.delivery import (
 from trpc_service.channels.identity import PostgreSQLChannelIdentityService
 from trpc_service.channels.media import ChannelMediaStore
 from trpc_service.channels.wecom import WeComMessageService
-from trpc_service.channels.wecom_runtime import WeComBindingSupervisor
+from trpc_service.channels.wecom_runtime import SDKWeComClientFactory, WeComBindingSupervisor
 from trpc_service.channels.feishu import FeishuMessageService
-from trpc_service.channels.feishu_runtime import FeishuBindingSupervisor
+from trpc_service.channels.feishu_runtime import SDKFeishuClientFactory, FeishuBindingSupervisor
 from trpc_service.config import Settings
 from trpc_service.metrics import PlatformTelemetry
 from trpc_service.mcp import TenantMCPService
@@ -62,9 +65,10 @@ class ApplicationContainer:
     storage_router: StorageRouter
     storage_composition: StorageComposition
     knowledge: TenantKnowledgeService
+    session_factory: async_sessionmaker[AsyncSession]
     agent_pipeline: AgentExecutionPipeline
-    approvals: ApprovalService
     agent_runner: AgentRunner
+    approvals: ApprovalService
     task_queue: AgentTaskQueue
     agent_workers: AgentWorkerService | None
     delivery_workers: DeliveryWorkerService | None
@@ -82,6 +86,7 @@ class ApplicationContainer:
     mcp: TenantMCPService
     skills: BuiltinSkillCatalog
     session_cache: SessionSnapshotCache | None
+    http_client: httpx.AsyncClient
 
     async def start(self) -> None:
         """Start local Worker slots when this process owns an execution role."""
@@ -97,47 +102,83 @@ class ApplicationContainer:
             await self.delivery_workers.start()
 
     async def close(self) -> None:
-        """Stop channel work and release concrete Runner resources."""
+        """Stop work in order and attempt every resource cleanup step."""
+
+        cleanup_errors: list[BaseException] = []
+
+        async def attempt(operation: Callable[[], object]) -> None:
+            try:
+                result = operation()
+                if isawaitable(result):
+                    await result
+            except BaseException as error:
+                cleanup_errors.append(error)
 
         if self.wecom_supervisor is not None:
-            self.wecom_supervisor.stop_ingress()
+            await attempt(self.wecom_supervisor.stop_ingress)
         if self.feishu_supervisor is not None:
-            self.feishu_supervisor.stop_ingress()
+            await attempt(self.feishu_supervisor.stop_ingress)
         if self.agent_workers is not None:
-            self.agent_workers.stop_claiming()
-            await self.node_heartbeat.begin_drain()
-            await self.agent_workers.close()
+            await attempt(self.agent_workers.stop_claiming)
+            await attempt(self.node_heartbeat.begin_drain)
+            await attempt(self.agent_workers.close)
         # Agent slots stop first so no new reply Outbox rows appear while the
         # delivery slots drain their last leases.
         if self.delivery_workers is not None:
-            await self.delivery_workers.close()
+            await attempt(self.delivery_workers.close)
         # Keep the provider connection alive until delivery slots release their
         # final leases, then stop accepting new long-connection callbacks.
         if self.wecom_supervisor is not None:
-            await self.wecom_supervisor.close()
+            await attempt(self.wecom_supervisor.close)
         if self.feishu_supervisor is not None:
-            await self.feishu_supervisor.close()
-        await self.node_heartbeat.close()
-        close = getattr(self.agent_runner, "close", None)
-        if close is not None:
-            await close()
+            await attempt(self.feishu_supervisor.close)
+        await attempt(self.node_heartbeat.close)
+        close_runner = getattr(self.agent_runner, "close", None)
+        if callable(close_runner):
+            await attempt(close_runner)
         if self.session_cache is not None:
-            await self.session_cache.close()
-        self.telemetry.shutdown()
+            await attempt(self.session_cache.close)
+        await attempt(self.http_client.aclose)
+        await attempt(self.telemetry.shutdown)
+
+        if cleanup_errors:
+            first_error = cleanup_errors[0]
+            for additional_error in cleanup_errors[1:]:
+                first_error.add_note(
+                    f"additional cleanup failure: {type(additional_error).__name__}: "
+                    f"{additional_error}")
+            raise first_error
+
+
+def _build_trpc_runner(
+    settings: Settings,
+    mcp: TenantMCPService,
+    skills: BuiltinSkillCatalog,
+) -> AgentRunner:
+    """Create the single production Runner at the composition boundary."""
+
+    return TRPCAgentRunner(settings, mcp=mcp, skills=skills)
 
 
 def build_application_container(
-    agent_pipeline: AgentExecutionPipeline | None = None,
     *,
-    settings: Settings | None = None,
-    agent_runner: AgentRunner | None = None,
-    session_factory: async_sessionmaker[AsyncSession] | None = None,
+    settings: Settings,
+    session_factory: async_sessionmaker[AsyncSession],
+    agent_runner_factory: Callable[
+        [Settings, TenantMCPService, BuiltinSkillCatalog],
+        AgentRunner,
+    ] = _build_trpc_runner,
 ) -> ApplicationContainer:
-    """Build extension registries and configured storage implementations."""
+    """Build the production graph; only Runner construction is replaceable."""
 
-    if session_factory is None:
-        raise ValueError("application container requires the primary database session factory")
-    app_settings = settings or Settings()
+    if not isinstance(settings, Settings):
+        raise TypeError("settings must be a Settings object")
+    if not isinstance(session_factory, async_sessionmaker):
+        raise TypeError("session_factory must be an async_sessionmaker")
+    if not callable(agent_runner_factory):
+        raise TypeError("agent_runner_factory must be callable")
+
+    app_settings = settings
     telemetry = PlatformTelemetry(
         service_name=app_settings.service_name,
         environment=app_settings.environment,
@@ -175,18 +216,12 @@ def build_application_container(
     feishu_adapter = FeishuChannelAdapter(feishu_transports, channel_media)
     channels.register(wecom_adapter)
     channels.register(feishu_adapter)
-    runtime_runner = agent_runner or TRPCAgentRunner(
-        app_settings,
-        mcp=mcp,
-        skills=skills,
-    )
     cache_url = app_settings.resolved_session_cache_url
     session_cache = (RedisSessionSnapshotCache.from_url(
         cache_url,
         ttl_seconds=app_settings.session_cache_ttl_seconds,
         max_events=app_settings.session_cache_max_events,
-    ) if agent_pipeline is None and app_settings.worker_concurrency > 0 and cache_url is not None
-                     else None)
+    ) if app_settings.worker_concurrency > 0 and cache_url is not None else None)
     approvals = ApprovalService(
         PostgreSQLApprovalStore(session_factory),
         ttl_seconds=app_settings.approval_ttl_seconds,
@@ -201,7 +236,11 @@ def build_application_container(
     )
     approval_commands = ApprovalCommandProcessor(approvals)
     channel_identities = PostgreSQLChannelIdentityService(session_factory)
-    pipeline = agent_pipeline or build_local_agent_pipeline(
+    runtime_runner = agent_runner_factory(app_settings, mcp, skills)
+    if not callable(getattr(runtime_runner, "run", None)):
+        raise TypeError("agent_runner_factory must return an AgentRunner")
+    http_client = httpx.AsyncClient(timeout=10, follow_redirects=False)
+    pipeline = build_local_agent_pipeline(
         settings=app_settings,
         storage=composition.router,
         runner=runtime_runner,
@@ -213,6 +252,7 @@ def build_application_container(
         tool_ledger=PostgreSQLToolLedger(session_factory),
         workspace_provider=workspace,
         mcp_service=mcp,
+        http_client=http_client,
         session_cache=session_cache,
     )
     task_queue = PostgreSQLAgentTaskQueue(session_factory)
@@ -267,6 +307,7 @@ def build_application_container(
         wecom_transports,
         wecom_messages,
         telemetry,
+        client_factory=SDKWeComClientFactory(),
         poll_interval_seconds=app_settings.channel_reconcile_interval_seconds,
         secret_store=tenant_secrets,
     ) if app_settings.runtime_role == "channel" else None)
@@ -283,6 +324,7 @@ def build_application_container(
         feishu_transports,
         feishu_messages,
         telemetry,
+        client_factory=SDKFeishuClientFactory(),
         poll_interval_seconds=app_settings.channel_reconcile_interval_seconds,
         media_store=channel_media,
         secret_store=tenant_secrets,
@@ -293,9 +335,10 @@ def build_application_container(
         storage_router=composition.router,
         storage_composition=composition,
         knowledge=knowledge,
+        session_factory=session_factory,
         agent_pipeline=pipeline,
-        approvals=approvals,
         agent_runner=runtime_runner,
+        approvals=approvals,
         task_queue=task_queue,
         agent_workers=workers,
         delivery_workers=delivery_workers,
@@ -313,4 +356,5 @@ def build_application_container(
         mcp=mcp,
         skills=skills,
         session_cache=session_cache,
+        http_client=http_client,
     )

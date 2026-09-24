@@ -9,7 +9,10 @@ from trpc_service.agent.contracts import AgentExecutionRequest
 from trpc_service.agent.ports import AgentTaskQueue
 from trpc_service.channels.adapters.wecom import WeComChannelAdapter
 from trpc_service.channels.approval import ApprovalCommandProcessor
-from trpc_service.channels.contracts import ChannelBindingConfig, IncomingEnvelope
+from trpc_service.channels.contracts import (
+    ChannelBindingConfig,
+    IncomingEnvelope,
+)
 from trpc_service.channels.identity import PostgreSQLChannelIdentityService
 from trpc_service.metrics import PlatformTelemetry
 from trpc_service.tenant.context import TenantContext
@@ -25,8 +28,8 @@ class WeComMessageService:
         adapter: WeComChannelAdapter,
         queue: AgentTaskQueue,
         telemetry: PlatformTelemetry,
-        approval_commands: ApprovalCommandProcessor | None = None,
-        identity_service: PostgreSQLChannelIdentityService | None = None,
+        approval_commands: ApprovalCommandProcessor,
+        identity_service: PostgreSQLChannelIdentityService,
     ) -> None:
         self._adapter = adapter
         self._queue = queue
@@ -48,21 +51,19 @@ class WeComMessageService:
         )
         incoming = await self._adapter.decode_for_tenant(envelope, binding, tenant)
         session_id = f"{binding.binding_id}:{incoming.conversation_id}"
-        if self._identity_service is not None:
-            identity = await self._identity_service.resolve(binding, incoming)
-            incoming = replace(incoming, principal_id=str(identity.principal_id))
-            session_id = identity.session_id
-        if self._approval_commands is not None:
-            incoming = await self._approval_commands.process(
-                incoming,
-                binding,
-                session_id,
-            )
-            approved_version = incoming.attributes.get("approval_config_version")
-            if (incoming.attributes.get("approval_verified") is True
-                    and incoming.attributes.get("approval_decision") == "approve"
-                    and isinstance(approved_version, int)):
-                tenant = tenant.model_copy(update={"config_version": approved_version})
+        identity = await self._identity_service.resolve(binding, incoming)
+        incoming = replace(incoming, principal_id=str(identity.principal_id))
+        session_id = identity.session_id
+        incoming = await self._approval_commands.process(
+            incoming,
+            binding,
+            session_id,
+        )
+        approved_version = incoming.attributes.get("approval_config_version")
+        if (incoming.attributes.get("approval_verified") is True
+                and incoming.attributes.get("approval_decision") == "approve"
+                and isinstance(approved_version, int)):
+            tenant = tenant.model_copy(update={"config_version": approved_version})
         request = AgentExecutionRequest(
             tenant=tenant,
             session_id=session_id,

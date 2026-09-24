@@ -7,7 +7,7 @@ import pytest
 from trpc_service.config import Settings
 from trpc_service.metrics import PlatformTelemetry
 from trpc_service.metrics import telemetry as telemetry_module
-from trpc_service.web import create_app
+from tests.conftest import create_test_app
 
 
 def test_grafana_dashboard_keeps_sparse_tool_calls_visible() -> None:
@@ -144,7 +144,7 @@ def test_platform_metrics_cover_tool_storage_im_and_gateway_boundaries() -> None
 
 @pytest.mark.anyio
 async def test_metrics_endpoint_exposes_application_registry() -> None:
-    app = create_app(
+    app = create_test_app(
         Settings(
             _env_file=None,
             database_url="sqlite+aiosqlite:///:memory:",

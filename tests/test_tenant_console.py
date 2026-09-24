@@ -14,7 +14,7 @@ from trpc_service.admin.secret_store import TenantSecretStore
 from trpc_service.channels.models import ChannelBinding
 from trpc_service.config import Settings
 from trpc_service.config.storage import LocalSecretNotReadyError
-from trpc_service.web import create_app
+from tests.conftest import create_test_app
 
 
 @pytest.fixture
@@ -30,7 +30,7 @@ async def tenant_console_clients(
         tenant_secret_master_key=SecretStr("02" * 32),
         worker_concurrency=0,
     )
-    app = create_app(settings)
+    app = create_test_app(settings)
     transport = httpx.ASGITransport(app=app)
     async with app.router.lifespan_context(app):
         async with app.state.engine.begin() as connection:

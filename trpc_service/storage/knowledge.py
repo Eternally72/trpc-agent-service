@@ -211,8 +211,6 @@ class TenantKnowledgeService:
         artifacts: ArtifactStore | None = None,
         storage: StorageRouter | None = None,
         default_backends: Mapping[str, object] | None = None,
-        parser: KnowledgeFileParser | None = None,
-        chunker: TextChunker | None = None,
         max_file_bytes: int = MAX_KNOWLEDGE_FILE_BYTES,
         ingest_lease_seconds: int = 15 * 60,
     ) -> None:
@@ -227,8 +225,8 @@ class TenantKnowledgeService:
         self._artifacts = artifacts
         self._storage = storage
         self._default_backends = dict(default_backends or {})
-        self._parser = parser or KnowledgeFileParser()
-        self._chunker = chunker or TextChunker()
+        self._parser = KnowledgeFileParser()
+        self._chunker = TextChunker()
         self._max_file_bytes = max_file_bytes
         self._ingest_lease_seconds = ingest_lease_seconds
 

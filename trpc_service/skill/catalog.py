@@ -8,6 +8,8 @@ from trpc_agent_sdk.skills import BaseSkillRepository, FsSkillRepository, Skill,
 
 from trpc_service.agent.contracts import AgentRuntimeConfig
 
+BUILTIN_SKILL_ROOT = Path(__file__).with_name("builtins")
+
 
 class GrantedSkillRepository(BaseSkillRepository):  # type: ignore[misc]
     """Expose only Skill names granted by an immutable Agent configuration."""
@@ -59,9 +61,8 @@ def _granted_skill_names(config: AgentRuntimeConfig) -> frozenset[str]:
 class BuiltinSkillCatalog:
     """Index the two reviewed platform Skills through the upstream SDK."""
 
-    def __init__(self, root: Path | None = None) -> None:
-        skill_root = root or Path(__file__).with_name("builtins")
-        self._repository = FsSkillRepository(str(skill_root))
+    def __init__(self, root: Path = BUILTIN_SKILL_ROOT) -> None:
+        self._repository = FsSkillRepository(str(root))
 
     def summaries(self) -> list[SkillSummary]:
         return cast(list[SkillSummary], self._repository.summaries())

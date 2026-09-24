@@ -3,6 +3,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from fastapi import FastAPI
 from pydantic import SecretStr
 from sqlalchemy import insert
 
@@ -17,7 +18,21 @@ from trpc_service.channels import (
     OutgoingMessage,
 )
 from trpc_service.config import Settings
+from trpc_service.container import build_application_container
+from trpc_service.storage import build_engine, build_session_factory
 from trpc_service.web import create_app
+
+
+def create_test_app(settings: Settings) -> FastAPI:
+    """Compose the real application with test-selected settings."""
+
+    engine = build_engine(settings)
+    session_factory = build_session_factory(engine)
+    container = build_application_container(
+        settings=settings,
+        session_factory=session_factory,
+    )
+    return create_app(settings, engine, container)
 
 
 class CatalogOnlyTestAdapter(ChannelAdapter):
@@ -67,7 +82,7 @@ async def api_client(tmp_path: Path) -> AsyncIterator[httpx.AsyncClient]:
         admin_bootstrap_token=SecretStr("test-platform-admin-token"),
         tenant_secret_master_key=SecretStr("01" * 32),
     )
-    app = create_app(settings)
+    app = create_test_app(settings)
     # Binding APIs now verify both catalog activation and node-local deployment.
     app.state.container.channels.register(CatalogOnlyTestAdapter("web"))
     transport = httpx.ASGITransport(app=app)

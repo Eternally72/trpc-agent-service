@@ -178,10 +178,10 @@ class WeComChannelAdapter(ChannelAdapter):
 
     def __init__(
         self,
-        transports: WeComTransportRegistry | None = None,
+        transports: WeComTransportRegistry,
         media_store: ChannelMediaStore | None = None,
     ) -> None:
-        self._transports = transports or WeComTransportRegistry()
+        self._transports = transports
         self._media_store = media_store
 
     @property

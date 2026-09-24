@@ -14,7 +14,6 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from trpc_service.agent.router import router as agent_router
-from trpc_service.agent.ports import AgentRunner
 from trpc_service.admin.profile_router import (
     catalog_router as tenant_model_catalog_router,
     router as model_profile_router,
@@ -40,21 +39,15 @@ from trpc_service.web.errors import install_exception_handlers
 
 
 def create_app(
-    settings: Settings | None = None,
-    engine: AsyncEngine | None = None,
-    container: ApplicationContainer | None = None,
-    agent_runner: AgentRunner | None = None,
+    settings: Settings,
+    engine: AsyncEngine,
+    container: ApplicationContainer,
 ) -> FastAPI:
-    """Build an application with injectable settings and database engine for tests."""
+    """Attach HTTP routes and lifecycle hooks to an explicit dependency graph."""
 
-    app_settings = settings or get_settings()
-    app_engine = engine or build_engine(app_settings)
-    session_factory = build_session_factory(app_engine)
-    app_container = container or build_application_container(
-        settings=app_settings,
-        agent_runner=agent_runner,
-        session_factory=session_factory,
-    )
+    app_settings = settings
+    app_engine = engine
+    app_container = container
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
@@ -123,7 +116,7 @@ def create_app(
     install_exception_handlers(app)
     app.state.settings = app_settings
     app.state.engine = app_engine
-    app.state.session_factory = session_factory
+    app.state.session_factory = app_container.session_factory
     app.state.container = app_container
     app.include_router(tenant_router, prefix=app_settings.api_prefix)
     app.include_router(admin_router, prefix=app_settings.api_prefix)
@@ -256,3 +249,16 @@ def create_app(
         }
 
     return app
+
+
+def create_default_app() -> FastAPI:
+    """Build the production ASGI application from environment configuration."""
+
+    settings = get_settings()
+    engine = build_engine(settings)
+    session_factory = build_session_factory(engine)
+    container = build_application_container(
+        settings=settings,
+        session_factory=session_factory,
+    )
+    return create_app(settings, engine, container)

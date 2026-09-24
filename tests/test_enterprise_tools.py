@@ -1,3 +1,4 @@
+from collections.abc import AsyncIterator
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,6 +10,12 @@ from tests.test_trpc_agent_runner import _context
 from trpc_service.agent.contracts import AgentToolCall, AgentToolKind
 from trpc_service.tool.enterprise import EnterpriseToolInvoker
 from trpc_service.workspace import LocalWorkspaceProvider
+
+
+@pytest.fixture
+async def enterprise_http_client() -> AsyncIterator[httpx.AsyncClient]:
+    async with httpx.AsyncClient() as client:
+        yield client
 
 
 def _call(name: str, arguments: dict[str, object], *, resource: str | None = None) -> AgentToolCall:
@@ -23,9 +30,13 @@ def _call(name: str, arguments: dict[str, object], *, resource: str | None = Non
 
 
 @pytest.mark.anyio
-async def test_current_time_uses_an_explicit_iana_timezone(tmp_path: Path) -> None:
+async def test_current_time_uses_an_explicit_iana_timezone(
+    tmp_path: Path,
+    enterprise_http_client: httpx.AsyncClient,
+) -> None:
     invoker = EnterpriseToolInvoker(
         LocalWorkspaceProvider(tmp_path),
+        http_client=enterprise_http_client,
         clock=lambda: datetime(2026, 9, 3, 0, 0, tzinfo=timezone.utc),
     )
 
@@ -35,7 +46,10 @@ async def test_current_time_uses_an_explicit_iana_timezone(tmp_path: Path) -> No
 
 
 @pytest.mark.anyio
-async def test_workspace_tools_read_only_the_current_tenant_workspace(tmp_path: Path) -> None:
+async def test_workspace_tools_read_only_the_current_tenant_workspace(
+    tmp_path: Path,
+    enterprise_http_client: httpx.AsyncClient,
+) -> None:
     context = _context()
     workspace = LocalWorkspaceProvider(tmp_path)
     handle = await workspace.acquire(context.request.tenant, context.request.tenant.request_id)
@@ -43,7 +57,7 @@ async def test_workspace_tools_read_only_the_current_tenant_workspace(tmp_path: 
     file_path = workspace.resolve_path(handle, "reports/status.txt")
     file_path.parent.mkdir(parents=True)
     file_path.write_text("healthy", encoding="utf-8")
-    invoker = EnterpriseToolInvoker(workspace)
+    invoker = EnterpriseToolInvoker(workspace, http_client=enterprise_http_client)
 
     listed = await invoker.invoke(
         context,

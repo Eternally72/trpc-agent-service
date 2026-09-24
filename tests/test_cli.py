@@ -19,7 +19,7 @@ def test_cli_runs_the_fastapi_factory(monkeypatch: pytest.MonkeyPatch) -> None:
 
     _cli.main()
 
-    assert captured["app"] == "trpc_service.web.app:create_app"
+    assert captured["app"] == "trpc_service.web.app:create_default_app"
     assert captured["factory"] is True
     assert captured["host"] == "127.0.0.1"
     assert captured["port"] == 8123

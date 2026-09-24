@@ -10,7 +10,7 @@ from trpc_service.admin.models import ManagementAuditLog
 from trpc_service.channels.models import ChannelBinding
 from trpc_service.config import Settings
 from trpc_service.storage.runtime_orm import OutboxMessageRow
-from trpc_service.web import create_app
+from tests.conftest import create_test_app
 
 
 @pytest.mark.anyio
@@ -24,7 +24,7 @@ async def test_delivery_failures_are_tenant_scoped_and_replay_is_audited(tmp_pat
         worker_concurrency=0,
         admin_bootstrap_token=SecretStr("delivery-recovery-admin"),
     )
-    app = create_app(settings)
+    app = create_test_app(settings)
     headers = {
         "Authorization": "Bearer delivery-recovery-admin",
         "X-Support-Reason": "delivery recovery API integration test",

@@ -4,13 +4,14 @@ import json
 import threading
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import pytest
 
 from trpc_service.channels import (
     ChannelBindingConfig,
     IncomingEnvelope,
+    IncomingMessage,
     MessageKind,
     OutgoingMessage,
 )
@@ -22,6 +23,7 @@ from trpc_service.agent.models import AgentApp
 from trpc_service.channels.feishu import FeishuMessageService
 from trpc_service.channels.feishu_runtime import FeishuBindingSupervisor
 from trpc_service.channels.models import ChannelBinding
+from trpc_service.channels.identity import ResolvedChannelContext
 from trpc_service.metrics import PlatformTelemetry
 
 
@@ -115,6 +117,42 @@ class RecordingTaskQueue:
         return "task-feishu"
 
 
+class PassThroughApprovalCommands:
+
+    async def process(
+        self,
+        incoming: IncomingMessage,
+        binding: ChannelBindingConfig,
+        session_id: str,
+    ) -> IncomingMessage:
+        del binding, session_id
+        return incoming
+
+
+class DeterministicIdentityService:
+
+    async def resolve(
+        self,
+        binding: ChannelBindingConfig,
+        incoming: IncomingMessage,
+    ) -> ResolvedChannelContext:
+        return ResolvedChannelContext(
+            principal_id=uuid5(NAMESPACE_URL, incoming.principal_id),
+            conversation_id=uuid5(NAMESPACE_URL, incoming.conversation_id),
+            session_id=f"{binding.binding_id}:{incoming.conversation_id}",
+        )
+
+
+def _message_service(adapter, queue, telemetry):  # type: ignore[no-untyped-def]
+    return FeishuMessageService(
+        adapter,
+        queue,
+        telemetry,
+        PassThroughApprovalCommands(),
+        DeterministicIdentityService(),
+    )
+
+
 def _binding() -> ChannelBindingConfig:
     return ChannelBindingConfig(
         binding_id=uuid4(),
@@ -127,7 +165,7 @@ def _binding() -> ChannelBindingConfig:
 
 @pytest.mark.anyio
 async def test_feishu_adapter_normalizes_text_identity_and_thread() -> None:
-    adapter = FeishuChannelAdapter()
+    adapter = FeishuChannelAdapter(FeishuTransportRegistry())
     binding = _binding()
     payload = {
         "message_id": "om_1",
@@ -158,7 +196,7 @@ async def test_feishu_adapter_normalizes_text_identity_and_thread() -> None:
 
 @pytest.mark.anyio
 async def test_feishu_adapter_preserves_media_descriptors_for_ingestion() -> None:
-    adapter = FeishuChannelAdapter()
+    adapter = FeishuChannelAdapter(FeishuTransportRegistry())
     binding = _binding()
     payload = {
         "message_id": "om_file",
@@ -328,7 +366,7 @@ async def test_feishu_adapter_acknowledges_and_rejects_invalid_delivery() -> Non
 
 @pytest.mark.anyio
 async def test_feishu_adapter_maps_direct_interactive_message_to_card() -> None:
-    adapter = FeishuChannelAdapter()
+    adapter = FeishuChannelAdapter(FeishuTransportRegistry())
     binding = _binding()
     payload = {
         "message_id": "om_card",
@@ -395,7 +433,7 @@ async def test_feishu_supervisor_connects_binding_and_routes_normalized_message(
         None,  # type: ignore[arg-type]
         adapter,
         transports,
-        FeishuMessageService(adapter, queue, telemetry),  # type: ignore[arg-type]
+        _message_service(adapter, queue, telemetry),
         telemetry,
         client_factory=factory,
         media_store=media,  # type: ignore[arg-type]

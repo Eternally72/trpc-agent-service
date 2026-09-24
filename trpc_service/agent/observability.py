@@ -22,7 +22,7 @@ def _nonnegative_rate(value: object) -> float | None:
     return float(value)
 
 
-class ObservedAgentRunner(AgentRunner):
+class ObservedAgentRunner:
     """Trace model execution and emit token, latency, cost, and audit facts."""
 
     def __init__(

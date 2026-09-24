@@ -145,10 +145,10 @@ class FeishuChannelAdapter(ChannelAdapter):
 
     def __init__(
         self,
-        transports: FeishuTransportRegistry | None = None,
+        transports: FeishuTransportRegistry,
         media_store: ChannelMediaStore | None = None,
     ) -> None:
-        self._transports = transports or FeishuTransportRegistry()
+        self._transports = transports
         self._media_store = media_store
 
     @property

@@ -256,6 +256,34 @@ async def update_model_credential(
     return _model_credential_read(row)
 
 
+@router.delete("/model-credentials/{credential_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def disable_model_credential(
+        credential_id: UUID,
+        actor: ManagementActor = Depends(require_platform_admin),
+        session: AsyncSession = Depends(get_session),
+) -> Response:
+    """Remove a credential from active use while retaining audit references."""
+
+    row = await session.get(ModelProviderCredential, credential_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="model credential not found")
+    if row.status != "disabled":
+        await _reject_dependency_disable_with_active_agents(
+            session,
+            model_credential_id=credential_id,
+        )
+        row.status = "disabled"
+    append_management_audit(
+        session,
+        actor,
+        action="model_credential.disable",
+        resource_type="model_provider_credential",
+        resource_id=str(credential_id),
+    )
+    await session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.get("/runtime-nodes", response_model=RuntimeNodeList)
 async def list_runtime_nodes(
         request: Request,
@@ -826,9 +854,41 @@ async def update_model_catalog_entry(
         resource_id=str(model_catalog_id),
         details_redacted={"fields": sorted(payload.model_fields_set)},
     )
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError as error:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail="model already exists in catalog") from error
     await session.refresh(row)
     return _catalog_read(row)
+
+
+@router.delete("/model-catalog/{model_catalog_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def disable_model_catalog_entry(
+        model_catalog_id: UUID,
+        actor: ManagementActor = Depends(require_platform_admin),
+        session: AsyncSession = Depends(get_session),
+) -> Response:
+    """Remove a catalog entry from active selection without erasing history."""
+
+    row = await session.get(ModelCatalogEntry, model_catalog_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="model catalog entry not found")
+    if row.status != "disabled":
+        await _reject_dependency_disable_with_active_agents(
+            session,
+            model_catalog_id=model_catalog_id,
+        )
+        row.status = "disabled"
+    append_management_audit(
+        session,
+        actor,
+        action="model_catalog.disable",
+        resource_type="model_catalog_entry",
+        resource_id=str(model_catalog_id),
+    )
+    await session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/channel-adapter-types", response_model=ChannelAdapterRead, status_code=201)

@@ -250,33 +250,31 @@ async def update_model_profile(
     changes = payload.model_dump(exclude_unset=True, mode="json")
     if changes.get("status") == "disabled" and row.status != "disabled":
         await _reject_profile_disable_with_active_agents(session, tenant_id, model_profile_id)
-    catalog = await session.get(ModelCatalogEntry, row.model_catalog_id)
+    catalog_id = UUID(str(changes.pop("model_catalog_id", row.model_catalog_id)))
+    catalog = await session.get(ModelCatalogEntry, catalog_id)
     if catalog is None:
         raise HTTPException(status_code=409, detail="model is not in platform catalog")
-    credential_id = changes.pop("credential_id", None)
-    if credential_id is not None:
-        credential = await session.get(ModelProviderCredential, UUID(str(credential_id)))
-        if credential is None or credential.status != "active":
-            raise HTTPException(status_code=409, detail="model credential is not active")
-        if catalog is None or credential.provider != catalog.provider:
-            raise HTTPException(status_code=409, detail="model credential provider does not match")
-        row.model_credential_id = credential.model_credential_id
-    if changes.get("status") == "active":
+    raw_credential_id = changes.pop("credential_id", row.model_credential_id)
+    credential_id = None if raw_credential_id is None else UUID(str(raw_credential_id))
+    credential = (None if credential_id is None else await
+                  session.get(ModelProviderCredential, credential_id))
+    if credential_id is not None and credential is None:
+        raise HTTPException(status_code=409, detail="model credential does not exist")
+    target_status = str(changes.get("status", row.status))
+    dependencies_changed = (catalog_id != row.model_catalog_id
+                            or credential_id != row.model_credential_id)
+    if target_status == "active" or dependencies_changed:
         if catalog.status != "active":
             raise HTTPException(status_code=409, detail="model is not active in platform catalog")
-        if row.model_credential_id is not None:
-            credential = await session.get(ModelProviderCredential, row.model_credential_id)
-            if credential is None or credential.status != "active":
-                raise HTTPException(status_code=409, detail="model credential is not active")
-            if credential.provider != catalog.provider:
-                raise HTTPException(
-                    status_code=409,
-                    detail="model credential provider does not match",
-                )
-        elif catalog.platform_secret_ref is None:
-            # Legacy catalog-level SecretRefs remain readable during migration,
-            # while every newly managed profile uses an explicit credential row.
+        if credential is not None and credential.status != "active":
+            raise HTTPException(status_code=409, detail="model credential is not active")
+        if credential is None and catalog.platform_secret_ref is None:
             raise HTTPException(status_code=409, detail="model has no platform-managed credential")
+    if credential is not None and credential.provider != catalog.provider:
+        raise HTTPException(
+            status_code=409,
+            detail="model credential provider does not match",
+        )
     _validate_budget_configuration(
         catalog,
         changes.get("parameter_config", row.parameter_config),
@@ -285,6 +283,8 @@ async def update_model_profile(
     )
     for field, value in changes.items():
         setattr(row, field, value)
+    row.model_catalog_id = catalog_id
+    row.model_credential_id = credential_id
     append_management_audit(
         session,
         actor,

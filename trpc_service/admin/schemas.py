@@ -227,6 +227,7 @@ class ModelCatalogCreate(BaseModel):
 
 
 class ModelCatalogUpdate(NonNullableUpdateModel):
+    model_name: str | None = Field(default=None, min_length=1, max_length=120)
     display_name: str | None = Field(default=None, min_length=1, max_length=120)
     capabilities: dict[str, Any] | None = None
     default_limits: dict[str, Any] | None = None
@@ -375,6 +376,7 @@ class ModelProfileCreate(BaseModel):
 
 class ModelProfileUpdate(NonNullableUpdateModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
+    model_catalog_id: UUID | None = None
     credential_id: UUID | None = None
     parameter_config: dict[str, Any] | None = None
     limits: dict[str, Any] | None = None

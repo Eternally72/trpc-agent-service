@@ -5,14 +5,12 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import hashlib
 import logging
-from typing import Protocol
 
 from trpc_service.agent.contracts import (
     AgentExecutionReceipt,
-    AgentExecutionRequest,
     AgentTaskClaim,
 )
-from trpc_service.agent.pipeline import AgentExecutionRejected
+from trpc_service.agent.pipeline import AgentExecutionPipeline, AgentExecutionRejected
 from trpc_service.agent.ports import AgentTaskQueue
 from trpc_service.agent.recovery import FailureDisposition, RecoveryPolicy
 from trpc_service.log import bind_log_context
@@ -27,13 +25,6 @@ class AgentTaskLeaseLost(RuntimeError):
     """Raised when another Worker may reclaim the durable queue task."""
 
 
-class AgentTaskExecutor(Protocol):
-    """Small execution seam implemented by the stable Agent pipeline."""
-
-    async def execute(self, request: AgentExecutionRequest) -> AgentExecutionReceipt:
-        ...
-
-
 class AgentWorkerService:
     """Compete for durable tasks without retaining Session state in the node."""
 
@@ -41,7 +32,7 @@ class AgentWorkerService:
         self,
         *,
         queue: AgentTaskQueue,
-        pipeline: AgentTaskExecutor,
+        pipeline: AgentExecutionPipeline,
         node_id: str,
         concurrency: int,
         runtime: LeasedWorkerConfig,

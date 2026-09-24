@@ -6,7 +6,10 @@ from uuid import UUID, NAMESPACE_URL, uuid5
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from trpc_service.channels.contracts import ChannelBindingConfig, IncomingMessage
+from trpc_service.channels.contracts import (
+    ChannelBindingConfig,
+    IncomingMessage,
+)
 from trpc_service.channels.models import (
     ChannelConversation,
     ChannelIdentity,
@@ -17,7 +20,7 @@ from trpc_service.channels.models import (
 
 @dataclass(frozen=True, slots=True)
 class ResolvedChannelContext:
-    """Internal principal and conversation identities used by the Agent chain."""
+    """Internal identities resolved from one provider-specific message."""
 
     principal_id: UUID
     conversation_id: UUID

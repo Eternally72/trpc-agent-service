@@ -75,6 +75,12 @@ if [[ "$(kubectl config current-context)" != "docker-desktop" ]]; then
     echo "error: current Kubernetes context must be docker-desktop" >&2
     exit 1
 fi
+# Fail before building an image or changing Secrets when Docker Desktop's
+# Kubernetes API is disabled or still starting.
+if ! kubectl --request-timeout=5s get --raw=/readyz >/dev/null 2>&1; then
+    echo "error: docker-desktop Kubernetes API is not ready; enable Kubernetes and retry" >&2
+    exit 1
+fi
 if [[ ! -f "$PROJECT_ROOT/.env" ]]; then
     echo "error: .env is required" >&2
     exit 1
@@ -215,12 +221,14 @@ if ! kubectl wait --for=condition=complete job/database-migration \
 fi
 
 sed "s|trpc-agent-service:0.1.0|$IMAGE|g" "$DEPLOY_DIR/application.yaml" | kubectl apply -f -
-# ConfigMap and Secret volumes eventually refresh their files, but Settings is
-# process-scoped. Restart every business role so a successful deploy means all
-# processes have loaded the exact configuration synchronized above.
-kubectl rollout restart deployment/gateway deployment/agent-worker \
-    deployment/channel-runtime deployment/worker-scaler \
-    --namespace "$NAMESPACE"
+# A new immutable image tag already changes each Pod template and reloads the
+# synchronized ConfigMaps and Secrets. Restart only when reusing an unchanged
+# image, whose process-scoped Settings would otherwise retain old values.
+if [[ -n "$REUSE_IMAGE" ]]; then
+    kubectl rollout restart deployment/gateway deployment/agent-worker \
+        deployment/channel-runtime deployment/worker-scaler \
+        --namespace "$NAMESPACE"
+fi
 kubectl rollout status deployment/agent-worker -n "$NAMESPACE" --timeout=300s
 kubectl rollout status deployment/gateway -n "$NAMESPACE" --timeout=300s
 kubectl rollout status deployment/channel-runtime -n "$NAMESPACE" --timeout=300s

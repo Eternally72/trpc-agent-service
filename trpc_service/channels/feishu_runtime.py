@@ -120,7 +120,7 @@ class FeishuBindingSupervisor:
         messages: FeishuMessageService,
         telemetry: PlatformTelemetry,
         *,
-        client_factory: FeishuClientFactory | None = None,
+        client_factory: FeishuClientFactory,
         poll_interval_seconds: float = 5.0,
         media_store: ChannelMediaStore | None = None,
         secret_store: TenantSecretStore | None = None,
@@ -132,7 +132,7 @@ class FeishuBindingSupervisor:
         self._transports = transports
         self._messages = messages
         self._telemetry = telemetry
-        self._client_factory = client_factory or SDKFeishuClientFactory()
+        self._client_factory = client_factory
         self._poll_interval_seconds = poll_interval_seconds
         self._media_store = media_store
         self._secret_store = secret_store

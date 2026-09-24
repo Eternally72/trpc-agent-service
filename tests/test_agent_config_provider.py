@@ -19,7 +19,7 @@ from trpc_service.channels.contracts import (
 )
 from trpc_service.config import Settings
 from trpc_service.tenant.context import TenantContext
-from trpc_service.web import create_app
+from tests.conftest import create_test_app
 
 
 def test_agent_configuration_failure_keeps_stable_error_code() -> None:
@@ -45,7 +45,7 @@ async def test_database_config_provider_applies_and_disables_tenant_model_profil
         auto_create_schema=True,
         admin_bootstrap_token=SecretStr("runtime-config-admin"),
     )
-    app = create_app(settings)
+    app = create_test_app(settings)
     transport = httpx.ASGITransport(app=app)
     headers = {
         "Authorization": "Bearer runtime-config-admin",
@@ -247,7 +247,7 @@ async def test_model_profile_rejects_secret_ref_without_runtime_resolver(tmp_pat
         auto_create_schema=True,
         admin_bootstrap_token=SecretStr("secret-ref-admin"),
     )
-    app = create_app(settings)
+    app = create_test_app(settings)
     transport = httpx.ASGITransport(app=app)
     headers = {
         "Authorization": "Bearer secret-ref-admin",

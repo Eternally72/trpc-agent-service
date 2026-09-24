@@ -1,5 +1,6 @@
 """Boundary tests for deterministic, enterprise, and SDK Tool surfaces."""
 
+from collections.abc import AsyncIterator
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -8,7 +9,7 @@ import httpx
 import pytest
 
 from tests.test_trpc_agent_runner import _context
-from trpc_service.agent.adapters.trpc_tools import TRPCToolBridge
+from trpc_service.agent.adapters.trpc_tools import CapabilityCallSequence, TRPCToolBridge
 from trpc_service.agent.contracts import (
     AgentExecutionContext,
     AgentToolCall,
@@ -19,6 +20,16 @@ from trpc_service.agent.ports import AgentToolInvoker
 from trpc_service.tool import BuiltinToolInvoker
 from trpc_service.tool.enterprise import EnterpriseToolInvoker
 from trpc_service.workspace import LocalWorkspaceProvider
+
+
+@pytest.fixture
+async def enterprise_http_client() -> AsyncIterator[httpx.AsyncClient]:
+    async with httpx.AsyncClient() as client:
+        yield client
+
+
+def _bridge(context, invoker):  # type: ignore[no-untyped-def]
+    return TRPCToolBridge(context, invoker, CapabilityCallSequence())
 
 
 def _call(name: str, arguments: dict[str, object]) -> AgentToolCall:
@@ -83,11 +94,15 @@ async def test_calculator_requires_a_string_argument() -> None:
 
 
 @pytest.mark.anyio
-async def test_enterprise_time_and_workspace_fail_closed(tmp_path: Path) -> None:
+async def test_enterprise_time_and_workspace_fail_closed(
+    tmp_path: Path,
+    enterprise_http_client: httpx.AsyncClient,
+) -> None:
     context = _context()
     workspace = LocalWorkspaceProvider(tmp_path)
     invoker = EnterpriseToolInvoker(
         workspace,
+        http_client=enterprise_http_client,
         clock=lambda: datetime(2026, 9, 5, tzinfo=timezone.utc),
     )
     handle = await workspace.acquire(context.request.tenant, context.request.tenant.request_id)
@@ -121,7 +136,11 @@ async def test_enterprise_time_and_workspace_fail_closed(tmp_path: Path) -> None
         with pytest.raises(error_type, match=message):
             await invoker.invoke(context, call)
 
-    naive = EnterpriseToolInvoker(workspace, clock=lambda: datetime(2026, 9, 5))
+    naive = EnterpriseToolInvoker(
+        workspace,
+        http_client=enterprise_http_client,
+        clock=lambda: datetime(2026, 9, 5),
+    )
     with pytest.raises(RuntimeError, match="timezone-aware"):
         await naive.invoke(context, _call("current_time", {}))
 
@@ -137,14 +156,15 @@ async def test_enterprise_time_and_workspace_fail_closed(tmp_path: Path) -> None
         ("https://other.example.com", "allowlisted"),
     ],
 )
-async def test_enterprise_http_rejects_invalid_destinations(tmp_path: Path, url: str,
-                                                            message: str) -> None:
+async def test_enterprise_http_rejects_invalid_destinations(
+        tmp_path: Path, url: str, message: str, enterprise_http_client: httpx.AsyncClient) -> None:
     context = replace(
         _context(),
         config=replace(_context().config, tools={"http_allowed_hosts": ["api.example.com"]}),
     )
     invoker = EnterpriseToolInvoker(
         LocalWorkspaceProvider(tmp_path),
+        http_client=enterprise_http_client,
         resolve_host=lambda _: ("93.184.216.34", ),
     )
     with pytest.raises(PermissionError, match=message):
@@ -152,29 +172,42 @@ async def test_enterprise_http_rejects_invalid_destinations(tmp_path: Path, url:
 
 
 @pytest.mark.anyio
-async def test_enterprise_http_validates_policy_dns_and_response(tmp_path: Path) -> None:
+async def test_enterprise_http_validates_policy_dns_and_response(
+    tmp_path: Path,
+    enterprise_http_client: httpx.AsyncClient,
+) -> None:
     base = _context()
     workspace = LocalWorkspaceProvider(tmp_path)
     call = _call("http.get", {"url": "https://api.example.com/value"})
 
     with pytest.raises(ValueError, match="URL string"):
-        await EnterpriseToolInvoker(workspace).invoke(base, _call("http.get", {"url": 1}))
+        await EnterpriseToolInvoker(workspace, http_client=enterprise_http_client).invoke(
+            base,
+            _call("http.get", {"url": 1}),
+        )
     for policy in ["api.example.com", [""], [1]]:
         context = replace(base, config=replace(base.config, tools={"http_allowed_hosts": policy}))
         with pytest.raises(ValueError, match="array of host names"):
-            await EnterpriseToolInvoker(workspace).invoke(context, call)
+            await EnterpriseToolInvoker(workspace,
+                                        http_client=enterprise_http_client).invoke(context, call)
 
     context = replace(
         base,
         config=replace(base.config, tools={"http_allowed_hosts": ["api.example.com"]}),
     )
     with pytest.raises(ConnectionError, match="did not resolve"):
-        await EnterpriseToolInvoker(workspace, resolve_host=lambda _: ()).invoke(context, call)
+        await EnterpriseToolInvoker(
+            workspace,
+            http_client=enterprise_http_client,
+            resolve_host=lambda _: (),
+        ).invoke(context, call)
     for address in ["127.0.0.1", "10.0.0.1", "169.254.1.1", "224.0.0.1", "0.0.0.0"]:
         with pytest.raises(PermissionError, match="non-public"):
-            await EnterpriseToolInvoker(workspace,
-                                        resolve_host=lambda _, address=address:
-                                        (address, )).invoke(context, call)
+            await EnterpriseToolInvoker(
+                workspace,
+                http_client=enterprise_http_client,
+                resolve_host=lambda _, address=address: (address, ),
+            ).invoke(context, call)
 
     async def status_handler(_: httpx.Request) -> httpx.Response:
         return httpx.Response(503, text="unavailable")
@@ -228,10 +261,7 @@ async def test_trpc_tool_bridge_exposes_every_granted_public_tool() -> None:
     ]
     context = replace(context, config=replace(context.config, tools={"allowlist": allowlist}))
     invoker = _RecordingInvoker()
-    functions = {
-        function.__name__: function
-        for function in TRPCToolBridge(context, invoker).functions()
-    }
+    functions = {function.__name__: function for function in _bridge(context, invoker).functions()}
 
     assert set(functions) == {
         "calculate",
@@ -281,10 +311,7 @@ async def test_trpc_tool_bridge_honors_typed_workspace_grants() -> None:
         ),
     )
     invoker = _RecordingInvoker()
-    functions = {
-        function.__name__: function
-        for function in TRPCToolBridge(context, invoker).functions()
-    }
+    functions = {function.__name__: function for function in _bridge(context, invoker).functions()}
 
     assert set(functions) == {"workspace_list", "workspace_read"}
     assert await functions["workspace_list"]() == {"result": "workspace.list"}
@@ -330,4 +357,4 @@ def test_trpc_tool_bridge_rejects_malformed_grants_and_allowlists() -> None:
     for tools in invalid_tools:
         configured = replace(context, config=replace(context.config, tools=tools))
         with pytest.raises(ValueError):
-            TRPCToolBridge(configured, _RecordingInvoker()).functions()
+            _bridge(configured, _RecordingInvoker()).functions()
