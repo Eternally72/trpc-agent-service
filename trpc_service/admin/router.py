@@ -10,6 +10,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from trpc_service.admin.login_guard import password_work
 from trpc_service.admin.audit import append_management_audit
 from trpc_service.admin.auth import (
     ManagementActor,
@@ -478,7 +479,8 @@ async def create_tenant_account(
             ManagementPasswordCredential(
                 management_principal_id=principal.management_principal_id,
                 username=payload.username,
-                password_hash=hash_management_password(payload.password.get_secret_value()),
+                password_hash=await password_work(hash_management_password,
+                                                  payload.password.get_secret_value()),
             ),
         ))
         await session.flush()
@@ -575,7 +577,8 @@ async def set_principal_password(
         select(ManagementPasswordCredential).where(
             ManagementPasswordCredential.management_principal_id == principal_id).with_for_update())
     username_changed = credential is None or credential.username != payload.username
-    password_hash = hash_management_password(payload.password.get_secret_value())
+    password_hash = await password_work(hash_management_password,
+                                        payload.password.get_secret_value())
     if credential is None:
         credential = ManagementPasswordCredential(
             management_principal_id=principal_id,

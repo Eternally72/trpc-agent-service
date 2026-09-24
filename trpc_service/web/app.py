@@ -1,5 +1,7 @@
 """FastAPI application factory and system health endpoints."""
 
+import asyncio
+import json
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -13,6 +15,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from trpc_service.admin.login_guard import LoginGuard
 from trpc_service.agent.router import router as agent_router
 from trpc_service.admin.profile_router import (
     catalog_router as tenant_model_catalog_router,
@@ -82,17 +85,16 @@ def create_app(
         status_code = 500
         supplied_request_id = request.headers.get("X-Request-ID", "").strip()
         request_id = (supplied_request_id if 0 < len(supplied_request_id) <= 128 else uuid4().hex)
-        traceparent = request.headers.get("traceparent", "").split("-")
-        trace_id = (traceparent[1]
-                    if len(traceparent) >= 2 and len(traceparent[1]) == 32 else uuid4().hex)
-        with bind_log_context(
-                service=app_settings.service_name,
-                environment=app_settings.environment,
-                node_id=app_settings.resolved_node_id,
-                node_role=app_settings.runtime_role,
-                request_id=request_id,
-                trace_id=trace_id,
-        ), app_container.telemetry.start_span("gateway.handle") as span:
+        parent = app_container.telemetry.extract_context(dict(request.headers))
+        with app_container.telemetry.start_span("gateway.handle", context=parent) as span, \
+                bind_log_context(
+                    service=app_settings.service_name,
+                    environment=app_settings.environment,
+                    node_id=app_settings.resolved_node_id,
+                    node_role=app_settings.runtime_role,
+                    request_id=request_id,
+                    trace_id=app_container.telemetry.current_trace_id(),
+                ):
             try:
                 response = await call_next(request)
                 status_code = response.status_code
@@ -114,6 +116,8 @@ def create_app(
     admin_assets = console_assets / "admin"
     tenant_assets = console_assets / "tenant"
     install_exception_handlers(app)
+    app.state.login_guard = LoginGuard(app_settings.management_login_concurrency,
+                                       app_settings.management_login_per_minute)
     app.state.settings = app_settings
     app.state.engine = app_engine
     app.state.session_factory = app_container.session_factory
@@ -130,6 +134,13 @@ def create_app(
     app.include_router(skill_catalog_router, prefix=app_settings.api_prefix)
     app.include_router(tenant_knowledge_router, prefix=app_settings.api_prefix)
     app.include_router(delivery_recovery_router, prefix=app_settings.api_prefix)
+
+    @app.get("/console/config.js", include_in_schema=False)
+    async def console_config() -> Response:
+        config = json.dumps({"apiPrefix": app_settings.api_prefix}, ensure_ascii=True)
+        return Response("window.ConsoleConfig = Object.freeze(" + config + ");",
+                        media_type="text/javascript",
+                        headers={"Cache-Control": "no-store"})
 
     @app.get("/console/assets/console.css", include_in_schema=False, response_class=FileResponse)
     async def console_stylesheet() -> FileResponse:
@@ -215,10 +226,11 @@ def create_app(
         """Report readiness only after the primary database accepts a query."""
 
         try:
-            async with app_engine.connect() as connection:
-                await connection.execute(text("SELECT 1"))
-            active_workers = await app_container.node_registry.active_worker_count()
-        except SQLAlchemyError:
+            async with asyncio.timeout(app_settings.readiness_timeout_seconds):
+                async with app_engine.connect() as connection:
+                    await connection.execute(text("SELECT 1"))
+                active_workers = await app_container.node_registry.active_worker_count()
+        except (SQLAlchemyError, TimeoutError):
             return JSONResponse(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 content={
@@ -229,17 +241,6 @@ def create_app(
                 },
             )
 
-        if active_workers < 1:
-            return JSONResponse(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                content={
-                    "status": "not_ready",
-                    "checks": {
-                        "database": "ok",
-                        "worker_nodes": 0,
-                    },
-                },
-            )
         return {
             "status": "ready",
             "checks": {

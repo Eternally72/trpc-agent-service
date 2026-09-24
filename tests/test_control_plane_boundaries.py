@@ -238,15 +238,14 @@ async def test_model_profile_rejects_inactive_dependencies_and_invalid_budgets(
     assert too_small_daily_budget.status_code == 409
     assert missing_credential.status_code == 409
     assert changed_model.status_code == 200
-    assert changed_model.json()["model_catalog_id"] == replacement_catalog.json()[
-        "model_catalog_id"]
+    assert changed_model.json()["model_catalog_id"] == replacement_catalog.json(
+    )["model_catalog_id"]
     assert inactive_catalog.status_code == 409
 
 
 @pytest.mark.anyio
 async def test_platform_admin_can_reassign_agent_model_profile(
-    api_client: httpx.AsyncClient,
-) -> None:
+    api_client: httpx.AsyncClient, ) -> None:
     """The console workflow updates Agent policy before retiring an old profile."""
 
     tenant = await _tenant(api_client, "Agent Model Assignment")

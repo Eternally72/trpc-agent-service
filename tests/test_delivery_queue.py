@@ -133,3 +133,76 @@ async def test_delivery_queue_leases_completes_and_manually_replays_dlq(tmp_path
     assert replay.message.retry_count == 1
     assert not await queue.replay(tenant_id, "missing")
     await engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_delivery_order_survives_concurrency_retry_and_unknown(tmp_path: Path) -> None:
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'order.db'}")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    tenant_id, agent_id, binding_id = uuid4(), uuid4(), uuid4()
+    now = datetime.now(timezone.utc)
+    async with sessions.begin() as db:
+        db.add(Tenant(tenant_id=tenant_id, name="Order"))
+        db.add(AgentApp(tenant_id=tenant_id, agent_app_id=agent_id, name="Order"))
+        db.add(
+            ChannelBinding(binding_id=binding_id,
+                           tenant_id=tenant_id,
+                           agent_app_id=agent_id,
+                           channel_type="wecom",
+                           external_account_hash="order-account"))
+        for identifier, session_id, sequence in (("z-first", "ordered", 0),
+                                                 ("a-second", "ordered", 1), ("other",
+                                                                              "independent", 2)):
+            db.add(
+                OutboxMessageRow(
+                    tenant_id=tenant_id,
+                    agent_app_id=agent_id,
+                    binding_id=binding_id,
+                    outbox_id=identifier,
+                    category="IM_REPLY",
+                    destination="wecom",
+                    session_id=session_id,
+                    sequence_no=sequence,
+                    idempotency_key=identifier,
+                    created_at=now,
+                    payload={
+                        "delivery_id": identifier,
+                        "conversation_id": session_id,
+                        "kind": "text",
+                        "text": identifier
+                    },
+                ))
+    queue = PostgreSQLDeliveryTaskQueue(sessions)
+    lease = now + timedelta(seconds=60)
+    try:
+        first = await queue.claim("worker-a", lease_until=lease)
+        assert first is not None and first.message.outbox_id == "z-first"
+        independent = await queue.claim("worker-b", lease_until=lease)
+        assert independent is not None and independent.message.outbox_id == "other"
+        assert await queue.claim("worker-c", lease_until=lease) is None
+        await queue.fail(first,
+                         worker_id="worker-a",
+                         decision=RecoveryDecision(disposition=FailureDisposition.RETRY,
+                                                   error_code="RateLimit",
+                                                   safe_summary="retry"),
+                         next_attempt_at=now + timedelta(seconds=30))
+        assert await queue.claim("worker-c", lease_until=lease) is None
+        async with sessions.begin() as db:
+            row = await db.get(OutboxMessageRow, (tenant_id, agent_id, "z-first"))
+            assert row is not None
+            row.status = "UNKNOWN"
+        assert await queue.claim("worker-c", lease_until=lease) is None
+        assert await queue.replay(tenant_id, "z-first")
+        replay = await queue.claim("worker-c", lease_until=lease)
+        assert replay is not None and replay.message.outbox_id == "z-first"
+        await queue.complete(replay,
+                             worker_id="worker-c",
+                             receipt=DeliveryReceipt(delivery_id="z-first",
+                                                     external_delivery_id="external-1",
+                                                     accepted_at=now))
+        second = await queue.claim("worker-d", lease_until=lease)
+        assert second is not None and second.message.outbox_id == "a-second"
+    finally:
+        await engine.dispose()

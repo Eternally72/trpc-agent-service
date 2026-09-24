@@ -32,6 +32,7 @@ from trpc_service.agent.ports import AgentToolInvoker
 from trpc_service.agent.adapters.trpc_tools import CapabilityCallSequence
 from trpc_service.agent.governance import ToolApprovalRequired
 from trpc_service.mcp.models import MCPConnection
+from trpc_service.mcp.transport import PinnedMCPSessionManager
 from trpc_service.mcp.schemas import MCPToolRisk, normalize_mcp_tool_risk
 
 logger = logging.getLogger(__name__)
@@ -58,7 +59,7 @@ class RemoteMCPToolset(Protocol):
         ...
 
 
-ToolsetFactory = Callable[[MCPConnection, Mapping[str, str]], RemoteMCPToolset]
+ToolsetFactory = Callable[[MCPConnection, Mapping[str, str], tuple[str, ...]], RemoteMCPToolset]
 HostResolver = Callable[[str], Sequence[str]]
 
 # Third-party catalogs and results are untrusted input. Keep both the persisted
@@ -135,6 +136,7 @@ class _TRPCMCPToolset:
 def _default_toolset_factory(
     connection: MCPConnection,
     headers: Mapping[str, str],
+    addresses: tuple[str, ...],
 ) -> RemoteMCPToolset:
     timeout = timedelta(seconds=connection.timeout_seconds)
     params = StreamableHttpParameters(
@@ -143,12 +145,15 @@ def _default_toolset_factory(
         timeout=timeout,
         sse_read_timeout=timeout,
     )
-    return _TRPCMCPToolset(
-        MCPToolset(
-            connection_params=params,
-            cache_tools=False,
-            tools_cache_ttl=None,
-        ))
+    toolset = MCPToolset(
+        connection_params=params,
+        cache_tools=False,
+        tools_cache_ttl=None,
+    )
+    # SDK 1.1.19 has no public transport injection. Keep this version-pinned
+    # seam alongside the existing protected declaration/execution adapters.
+    toolset._mcp_session_manager = PinnedMCPSessionManager(params, addresses)
+    return _TRPCMCPToolset(toolset)
 
 
 def _risk_level(tool: RemoteMCPTool) -> int:
@@ -300,9 +305,14 @@ class TenantMCPService(AgentToolInvoker):
         )
         return {"Authorization": f"Bearer {value}"}
 
-    async def _validate_network(self, endpoint_url: str, timeout_seconds: int) -> None:
+    async def _validate_network(
+        self,
+        endpoint_url: str,
+        timeout_seconds: int,
+    ) -> tuple[str, ...]:
         parsed = urlsplit(endpoint_url)
-        if parsed.scheme != "https" or parsed.hostname is None:
+        if (parsed.scheme != "https" or parsed.hostname is None or parsed.username is not None
+                or parsed.password is not None or parsed.fragment):
             raise PermissionError("MCP endpoint must use HTTPS")
         # DNS is outside the MCP SDK transport timeout. Bound it independently
         # so a broken tenant endpoint cannot leave an IM reply in "thinking".
@@ -313,12 +323,13 @@ class TenantMCPService(AgentToolInvoker):
         if not addresses:
             raise ConnectionError("MCP endpoint did not resolve")
         if parsed.hostname.casefold() in self._private_allowed_hosts:
-            return
+            return tuple(str(ipaddress.ip_address(address)) for address in addresses)
         for address in addresses:
             ip = ipaddress.ip_address(address)
             if (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast
                     or ip.is_reserved or ip.is_unspecified):
                 raise PermissionError("MCP endpoint resolved to a non-public address")
+        return tuple(str(ipaddress.ip_address(address)) for address in addresses)
 
     async def refresh(self, tenant_id: UUID, connection_id: UUID) -> list[dict[str, Any]]:
         """Discover a bounded Tool catalog and persist only schemas, never credentials."""
@@ -326,13 +337,12 @@ class TenantMCPService(AgentToolInvoker):
         connection = await self._connection(tenant_id, connection_id)
         if connection.status != "active":
             raise PermissionError("MCP connection is disabled")
-        await self._validate_network(connection.endpoint_url, connection.timeout_seconds)
-        toolset = self._toolset_factory(connection, await self._headers(connection))
+        addresses = await self._validate_network(connection.endpoint_url,
+                                                 connection.timeout_seconds)
+        toolset = self._toolset_factory(connection, await self._headers(connection), addresses)
         try:
-            tools = await asyncio.wait_for(
-                toolset.tools(),
-                timeout=connection.timeout_seconds,
-            )
+            async with asyncio.timeout(connection.timeout_seconds):
+                tools = await toolset.tools()
             if len(tools) > _MAX_MCP_TOOLS:
                 raise ValueError(f"MCP server exposes more than {_MAX_MCP_TOOLS} tools")
             catalog = []
@@ -411,21 +421,20 @@ class TenantMCPService(AgentToolInvoker):
         )
         if entry is None or not isinstance(entry.get("remote_name"), str):
             raise PermissionError("MCP Tool is not present in the refreshed catalog")
-        await self._validate_network(connection.endpoint_url, connection.timeout_seconds)
-        toolset = self._toolset_factory(connection, await self._headers(connection))
+        addresses = await self._validate_network(connection.endpoint_url,
+                                                 connection.timeout_seconds)
+        toolset = self._toolset_factory(connection, await self._headers(connection), addresses)
         try:
-            tools = await asyncio.wait_for(
-                toolset.tools(),
-                timeout=connection.timeout_seconds,
-            )
+            async with asyncio.timeout(connection.timeout_seconds):
+                tools = await toolset.tools()
             remote_name = str(entry["remote_name"])
             tool = next((item for item in tools if item.name == remote_name), None)
             if tool is None:
                 raise LookupError("MCP Tool is no longer available; refresh the connection")
-            result = await asyncio.wait_for(
-                tool.invoke(dict(call.arguments)),
-                timeout=connection.timeout_seconds,
-            )
+            if _risk_level(tool) > int(normalize_mcp_tool_risk(entry.get("risk_level"))):
+                raise PermissionError("MCP Tool risk changed; refresh and authorize the catalog")
+            async with asyncio.timeout(connection.timeout_seconds):
+                result = await tool.invoke(dict(call.arguments))
         finally:
             await toolset.close()
         content = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)

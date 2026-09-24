@@ -43,7 +43,7 @@ async function loadCapabilityCatalog({ force = false } = {}) {
   if (state.capabilitiesLoaded && !force) return;
   const [skills, connections] = await Promise.all([
     api(`/tenants/${tenantId()}/skills`),
-    api(`/tenants/${tenantId()}/mcp-connections?limit=100`),
+    api.all(`/tenants/${tenantId()}/mcp-connections`),
   ]);
   state.skills = skills.items;
   state.mcpConnections = connections.items;
@@ -61,7 +61,7 @@ async function loadOwnedTenants() {
 }
 
 async function loadAgents() {
-  const data = await api(`/tenants/${tenantId()}/agents?limit=100`);
+  const data = await api.all(`/tenants/${tenantId()}/agents`);
   state.agents = data.items;
   $("#agent-rows").innerHTML = data.items.map((item) => {
     const bases = item.knowledge_config?.knowledge_base_names || [];
@@ -146,7 +146,7 @@ async function loadChannels() {
   if (!state.agents.length) await loadAgents();
   const [catalog, bindings] = await Promise.all([
     api(`/tenants/${tenantId()}/channel-adapter-types`),
-    api(`/tenants/${tenantId()}/channel-bindings?limit=100`),
+    api.all(`/tenants/${tenantId()}/channel-bindings`),
   ]);
   state.adapters = catalog.items;
   state.bindings = bindings.items;
@@ -300,7 +300,7 @@ async function deleteKnowledge(button) {
 }
 
 async function loadFailures() {
-  const data = await api(`/tenants/${tenantId()}/delivery-failures?limit=100`);
+  const data = await api.page(`/tenants/${tenantId()}/delivery-failures`, "failure-rows", loadFailures);
   $("#failure-rows").innerHTML = data.items.map((item) => `<tr><td>${formatDate(item.updated_at)}</td><td class="mono">${escapeHTML(item.binding_id || "—")}</td><td><span class="row-title">${escapeHTML(item.last_error_code || "未分类")}</span><span class="row-subtitle">${escapeHTML(item.last_error_summary || "没有安全摘要")}</span></td><td>${badge(item.status)}</td><td>${["DEAD_LETTER", "UNKNOWN"].includes(item.status) ? `<button class="button secondary small failure-replay" data-id="${escapeHTML(item.outbox_id)}">重新投递</button>` : "等待自动重试"}</td></tr>`).join("") || empty(5);
   $$(".failure-replay").forEach((button) => button.addEventListener("click", () => replayFailure(button)));
   return data;
@@ -360,6 +360,7 @@ async function mutate({ button, request, success, refreshView, dialog, form }) {
 function showView(name) {
   $$(".nav-item").forEach((item) => item.classList.toggle("active", item.dataset.view === name));
   $$(".view").forEach((item) => item.classList.toggle("active", item.id === name));
+  $$(".nav-item").forEach((item) => { if (item.dataset.view === name) item.setAttribute("aria-current", "page"); else item.removeAttribute("aria-current"); });
   $("#page-title").textContent = titles[name] || "租户工作台";
   refresh(name, { quiet: true }).catch(() => {});
 }

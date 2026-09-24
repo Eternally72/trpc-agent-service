@@ -248,6 +248,8 @@ class DatabaseAgentConfigProvider(AgentConfigProvider):
             knowledge_config = _configuration_mapping(snapshot, "knowledge_config")
             backend_config = _configuration_mapping(snapshot, "backend_config")
 
+            self._settings.validate_execution_backends(backend_config)
+
             parameters = {
                 **catalog.default_limits,
                 **profile.parameter_config,

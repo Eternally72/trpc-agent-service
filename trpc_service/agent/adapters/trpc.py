@@ -222,7 +222,7 @@ async def _run_sdk_turn(
             session_id=scoped_session_id,
             new_message=content,
             run_config=RunConfig(save_history_enabled=True),
-    ): 
+    ):
         if event.is_error():
             # Tool errors are model-visible function responses. Let the model
             # correct its call; provider/model errors still fail closed.

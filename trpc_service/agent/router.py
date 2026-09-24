@@ -2,7 +2,7 @@
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -49,6 +49,19 @@ _EXECUTION_CONFIG_FIELDS = frozenset({
     "knowledge_config",
     "backend_config",
 })
+
+
+def _validate_backends(request: Request, configured: object) -> None:
+    from trpc_service.storage.router import BackendProfile
+    if not isinstance(configured, dict):
+        raise HTTPException(status_code=422, detail="backend_config must be an object")
+    settings = request.app.state.settings
+    try:
+        settings.validate_execution_backends(configured)
+        request.app.state.container.storage_router.resolve(
+            BackendProfile.from_mapping(configured or settings.storage_profile.model_dump()))
+    except (ValueError, LookupError) as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
 
 
 def _enforce_model_policy_ownership(
@@ -167,6 +180,7 @@ async def _has_active_channel_binding(
 async def create_agent(
         tenant_id: UUID,
         payload: AgentAppCreate,
+        request: Request,
         actor: ManagementActor = Depends(require_tenant_admin),
         support_reason: str | None = Header(default=None, alias="X-Support-Reason"),
         session: AsyncSession = Depends(get_session),
@@ -188,6 +202,7 @@ async def create_agent(
         model_profile_id = await select_default_model_profile_id(session, tenant_id)
     await _require_model_profile(session, tenant_id, model_profile_id)
 
+    _validate_backends(request, payload.backend_config)
     values = payload.model_dump()
     values["model_profile_id"] = model_profile_id
     agent = AgentApp(tenant_id=tenant_id, **values)
@@ -257,6 +272,7 @@ async def create_agent_config_version(
         tenant_id: UUID,
         agent_app_id: UUID,
         payload: AgentConfigVersionCreate,
+        request: Request,
         actor: ManagementActor = Depends(require_tenant_admin),
         support_reason: str | None = Header(default=None, alias="X-Support-Reason"),
         session: AsyncSession = Depends(get_session),
@@ -295,6 +311,7 @@ async def create_agent_config_version(
             None if profile_value is None else UUID(str(profile_value)),
         )
     snapshot.update(changes)
+    _validate_backends(request, snapshot.get("backend_config", {}))
     latest = await session.scalar(
         select(func.max(AgentConfigVersion.version)).where(
             AgentConfigVersion.tenant_id == tenant_id,
@@ -352,6 +369,7 @@ async def release_agent_config_version(
         agent_app_id: UUID,
         version: int,
         payload: AgentConfigRelease,
+        request: Request,
         actor: ManagementActor = Depends(require_tenant_admin),
         support_reason: str | None = Header(default=None, alias="X-Support-Reason"),
         session: AsyncSession = Depends(get_session),
@@ -367,6 +385,7 @@ async def release_agent_config_version(
         raise HTTPException(status_code=404, detail="agent not found")
     config = await _config_version(session, tenant_id, agent_app_id, version)
     stable_profile = None if agent.model_profile_id is None else str(agent.model_profile_id)
+    _validate_backends(request, config.snapshot.get("backend_config", {}))
     target_profile = config.snapshot.get("model_profile_id")
     if target_profile != stable_profile:
         _enforce_model_policy_ownership(actor, {"model_profile_id"})
@@ -411,6 +430,7 @@ async def rollback_agent_config_version(
         agent_app_id: UUID,
         version: int,
         payload: AgentConfigRollback,
+        request: Request,
         actor: ManagementActor = Depends(require_tenant_admin),
         support_reason: str | None = Header(default=None, alias="X-Support-Reason"),
         session: AsyncSession = Depends(get_session),
@@ -428,6 +448,7 @@ async def rollback_agent_config_version(
     if config.status != "released":
         raise HTTPException(status_code=409, detail="only a released configuration can be restored")
     stable_profile = None if agent.model_profile_id is None else str(agent.model_profile_id)
+    _validate_backends(request, config.snapshot.get("backend_config", {}))
     target_profile = config.snapshot.get("model_profile_id")
     if target_profile != stable_profile:
         _enforce_model_policy_ownership(actor, {"model_profile_id"})
@@ -499,6 +520,7 @@ async def update_agent(
         tenant_id: UUID,
         agent_app_id: UUID,
         payload: AgentAppUpdate,
+        request: Request,
         actor: ManagementActor = Depends(require_tenant_admin),
         support_reason: str | None = Header(default=None, alias="X-Support-Reason"),
         session: AsyncSession = Depends(get_session),
@@ -534,6 +556,7 @@ async def update_agent(
         )
     elif "model_profile_id" in payload.model_fields_set:
         await _require_model_profile(session, tenant_id, payload.model_profile_id)
+    _validate_backends(request, changes.get("backend_config", agent.backend_config))
     for field, value in changes.items():
         setattr(agent, field, value)
     try:

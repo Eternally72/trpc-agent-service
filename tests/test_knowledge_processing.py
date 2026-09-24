@@ -129,3 +129,34 @@ def test_text_chunker_preserves_overlap_and_source_offsets() -> None:
     assert chunks[0].start_char == 0
     assert chunks[1].start_char < chunks[0].end_char
     assert all(chunk.content.strip() for chunk in chunks)
+
+
+@pytest.mark.anyio
+async def test_isolated_document_parser_accepts_docx_and_rejects_corruption() -> None:
+    from docx import Document
+
+    backend = build_inmemory_backend()
+    service = TenantKnowledgeService(
+        None,  # type: ignore[arg-type]
+        knowledge=backend.knowledge,
+        artifacts=backend.artifact,
+    )
+    document = Document()
+    document.add_paragraph("企业知识库：新员工指南")
+    payload = BytesIO()
+    document.save(payload)
+    assert await service._parse("guide.docx", "application/octet-stream",
+                                payload.getvalue()) == ("企业知识库：新员工指南")
+    with pytest.raises(ValueError, match="document parsing failed"):
+        await service._parse("broken.pdf", "application/pdf", b"not a PDF")
+
+
+def test_docx_expansion_bomb_is_rejected_before_document_parsing() -> None:
+    from zipfile import ZIP_DEFLATED, ZipFile
+
+    payload = BytesIO()
+    with ZipFile(payload, "w", compression=ZIP_DEFLATED) as archive:
+        archive.writestr("word/document.xml", b"x" * (32 * 1024 * 1024 + 1))
+    payload.seek(0)
+    with pytest.raises(ValueError, match="expanded file limit"):
+        KnowledgeFileParser().parse("bomb.docx", "application/octet-stream", payload)

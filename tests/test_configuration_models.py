@@ -62,10 +62,8 @@ def test_agent_adapter_compatibility_exports_are_lazy_and_importable() -> None:
         [
             sys.executable,
             "-c",
-            (
-                "from trpc_service.agent.adapters import "
-                "TRPCAgentRunner, TRPCToolBridge"
-            ),
+            ("from trpc_service.agent.adapters import "
+             "TRPCAgentRunner, TRPCToolBridge"),
         ],
         check=False,
         capture_output=True,

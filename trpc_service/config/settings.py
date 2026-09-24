@@ -1,12 +1,13 @@
 """Application settings loaded from environment variables and local `.env`."""
 
+from collections.abc import Mapping
 from functools import lru_cache
 from pathlib import Path
 import os
 import re
 import socket
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import URL, make_url
 
@@ -15,6 +16,7 @@ from trpc_service.config.models import normalize_channel_type
 from trpc_service.config.runtime import LeasedWorkerConfig
 from trpc_service.config.storage import (
     InMemoryBackendConfig,
+    PostgreSQLBackendConfig,
     StorageBackendConfig,
     StorageProfileConfig,
 )
@@ -38,6 +40,10 @@ class Settings(BaseSettings):
     session_cache_ttl_seconds: int = Field(default=30 * 60, ge=60, le=24 * 60 * 60)
     session_cache_max_events: int = Field(default=40, ge=2, le=200)
     api_prefix: str = "/api/v1"
+    database_pool_size: int = Field(default=5, ge=1, le=100)
+    database_max_overflow: int = Field(default=5, ge=0, le=100)
+    database_pool_timeout: float = Field(default=10, gt=0, le=60)
+    readiness_timeout_seconds: float = Field(default=2, gt=0, le=30)
     host: str = "127.0.0.1"
     port: int = 8000
     log_level: str = "INFO"
@@ -96,6 +102,8 @@ class Settings(BaseSettings):
     tenant_secret_master_key_file: Path | None = None
     management_session_ttl_seconds: int = Field(default=8 * 60 * 60, ge=300, le=7 * 24 * 60 * 60)
     management_login_max_attempts: int = Field(default=5, ge=1, le=20)
+    management_login_concurrency: int = Field(default=2, ge=1, le=16)
+    management_login_per_minute: int = Field(default=20, ge=5, le=1000)
     management_login_lock_seconds: int = Field(default=15 * 60, ge=30, le=24 * 60 * 60)
     secure_cookies: bool = False
     agent_instruction: str = "你是一个可靠、简洁的企业级智能助手。"
@@ -132,6 +140,42 @@ class Settings(BaseSettings):
         artifact="inmemory",
         audit="inmemory",
     )
+
+    @field_validator("api_prefix")
+    @classmethod
+    def validate_api_prefix(cls, value: str) -> str:
+        if not re.fullmatch(r"/(?:[a-zA-Z0-9_-]+/)*[a-zA-Z0-9_-]+", value):
+            raise ValueError("API prefix must be an absolute path without a trailing slash")
+        return value
+
+    @model_validator(mode="after")
+    def validate_production(self) -> "Settings":
+        if self.environment.casefold() == "production":
+            if not self.secure_cookies or self.auto_create_schema:
+                raise ValueError("production requires secure cookies and migrated schemas")
+            self.validate_execution_backends({})
+        return self
+
+    def validate_execution_backends(self, configured: Mapping[str, object]) -> None:
+        """Keep transaction facts visible to the primary SQL delivery queue."""
+
+        # Isolated SQLite fixtures intentionally exercise in-memory adapters.
+        primary = make_url(self.database_url)
+        if primary.get_backend_name() == "sqlite" and self.environment != "production":
+            return
+        profile = StorageProfileConfig.model_validate(
+            dict(configured) or self.storage_profile.model_dump())
+        backend = self.storage_backends.get(profile.session)
+        if not isinstance(backend, PostgreSQLBackendConfig):
+            raise ValueError("Session/Inbox/Outbox must use the primary PostgreSQL backend")
+        target = make_url(backend.url)
+
+        def identity(url: URL) -> tuple[object, ...]:
+            return (url.get_backend_name(), (url.host or "").casefold(), url.port
+                    or 5432, url.database, url.query.get("server_settings"))
+
+        if identity(primary) != identity(target):
+            raise ValueError("Session/Inbox/Outbox must share the primary database")
 
     @property
     def resolved_database_url(self) -> URL:

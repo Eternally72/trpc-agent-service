@@ -8,7 +8,8 @@ import logging
 from typing import Protocol
 from uuid import UUID
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, exists, or_, select
+from sqlalchemy.orm import aliased
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from trpc_service.agent.recovery import (
@@ -146,6 +147,30 @@ class PostgreSQLDeliveryTaskQueue:
             return None
         channel_predicates = (() if self._allowed_channel_types is None else
                               (ChannelBinding.channel_type.in_(self._allowed_channel_types), ))
+        earlier = aliased(OutboxMessageRow)
+        same_stream = or_(
+            and_(OutboxMessageRow.session_id.is_not(None),
+                 earlier.session_id == OutboxMessageRow.session_id),
+            and_(OutboxMessageRow.session_id.is_(None), OutboxMessageRow.request_id.is_not(None),
+                 earlier.request_id == OutboxMessageRow.request_id),
+        )
+        has_predecessor = exists(
+            select(earlier.outbox_id).where(
+                earlier.tenant_id == OutboxMessageRow.tenant_id,
+                earlier.agent_app_id == OutboxMessageRow.agent_app_id,
+                earlier.binding_id == OutboxMessageRow.binding_id,
+                earlier.category == "IM_REPLY",
+                same_stream,
+                earlier.status.in_(("PENDING", "PROCESSING", "RETRYABLE_FAILED", "UNKNOWN")),
+                or_(
+                    earlier.created_at < OutboxMessageRow.created_at,
+                    and_(earlier.created_at == OutboxMessageRow.created_at, earlier.sequence_no
+                         < OutboxMessageRow.sequence_no),
+                    and_(earlier.created_at == OutboxMessageRow.created_at,
+                         earlier.sequence_no == OutboxMessageRow.sequence_no, earlier.outbox_id
+                         < OutboxMessageRow.outbox_id),
+                ),
+            ))
         async with self._sessions.begin() as database:
             row = await database.scalar(
                 select(OutboxMessageRow).join(
@@ -156,6 +181,7 @@ class PostgreSQLDeliveryTaskQueue:
                     OutboxMessageRow.category == "IM_REPLY",
                     ChannelBinding.status == "active",
                     *channel_predicates,
+                    ~has_predecessor,
                     or_(
                         OutboxMessageRow.status.in_(("PENDING", "RETRYABLE_FAILED")),
                         (OutboxMessageRow.status == "PROCESSING")
@@ -167,8 +193,9 @@ class PostgreSQLDeliveryTaskQueue:
                 ).order_by(
                     OutboxMessageRow.priority,
                     OutboxMessageRow.created_at,
+                    OutboxMessageRow.sequence_no,
                     OutboxMessageRow.outbox_id,
-                ).limit(1).with_for_update(skip_locked=True))
+                ).limit(1).with_for_update(skip_locked=True, of=OutboxMessageRow))
             if row is None or row.binding_id is None:
                 return None
             binding = await database.scalar(

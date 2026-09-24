@@ -26,7 +26,8 @@ def test_deploy_checks_cluster_readiness_before_building() -> None:
     deploy_script = (PROJECT_ROOT / "deploy/kubernetes/deploy.sh").read_text(encoding="utf-8")
 
     assert "--request-timeout=5s get --raw=/readyz" in deploy_script
-    assert deploy_script.index("get --raw=/readyz") < deploy_script.index('docker build --tag "$IMAGE"')
+    assert deploy_script.index("get --raw=/readyz") < deploy_script.index(
+        'docker build --tag "$IMAGE"')
 
 
 def test_destructive_scripts_pin_the_local_cluster_context() -> None:
@@ -75,7 +76,8 @@ def test_redeploy_reloads_mutable_configuration_and_rotated_passwords() -> None:
     assert "deployment/channel-runtime deployment/worker-scaler" in deploy_script
     # A newly built immutable image already changes the Pod template. Restarting
     # again creates a second Worker ReplicaSet and leaves draining Pods visible.
-    application_rollout = deploy_script.split('"$DEPLOY_DIR/application.yaml" | kubectl apply -f -', 1)[1]
+    application_rollout = deploy_script.split('"$DEPLOY_DIR/application.yaml" | kubectl apply -f -',
+                                              1)[1]
     assert 'if [[ -n "$REUSE_IMAGE" ]]' in application_rollout
     assert "TRPC_K8S_REUSE_IMAGE" in deploy_script
     assert 'docker image inspect "$IMAGE"' in deploy_script

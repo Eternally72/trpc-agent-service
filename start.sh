@@ -17,7 +17,7 @@ readonly SUPERVISOR_LOG_FILE="$RUN_DIR/worker-supervisor.log"
 readonly CHANNEL_LOG_FILE="$RUN_DIR/channel-runtime.log"
 cd -- "$PROJECT_ROOT"
 
-for command_name in curl docker uv openssl; do
+for command_name in curl docker uv openssl setsid; do
     if ! command -v "$command_name" >/dev/null 2>&1; then
         echo "error: $command_name is required" >&2
         exit 127
@@ -170,6 +170,8 @@ fi
 
 # Each Worker is an independent host-Python process. They share only external
 # storage and can therefore be moved to separate hosts or Kubernetes Pods later.
+# Detach long-lived processes from the launcher's process group as well as its
+# terminal; IDE/task runners may clean up their entire group when a script exits.
 launched_pids=()
 cleanup_launched_processes() {
     local launched_pid
@@ -187,7 +189,7 @@ cleanup_launched_processes() {
 
 # The Supervisor owns Worker child processes. The admin console changes only
 # durable desired capacity; this process performs actual expansion and drain.
-nohup env \
+nohup setsid env \
     TRPC_SERVICE_RUNTIME_ROLE=supervisor \
     TRPC_SERVICE_NODE_ID=local-worker-supervisor \
     TRPC_SERVICE_WORKER_CONCURRENCY=0 \
@@ -200,7 +202,7 @@ echo "$supervisor_pid" >"$SUPERVISOR_PID_FILE"
 
 # One Channel Runtime process owns all configured provider long connections.
 # Agent execution remains on the independent Worker processes above.
-nohup env \
+nohup setsid env \
     TRPC_SERVICE_RUNTIME_ROLE=channel \
     TRPC_SERVICE_NODE_ID=local-channel-runtime \
     TRPC_SERVICE_WORKER_CONCURRENCY=0 \
@@ -211,7 +213,7 @@ launched_pids+=("$channel_pid")
 echo "$channel_pid" >"$CHANNEL_PID_FILE"
 
 # The Gateway owns HTTP only. It never relies on process-local Agent execution.
-nohup env \
+nohup setsid env \
     TRPC_SERVICE_RUNTIME_ROLE=api \
     TRPC_SERVICE_NODE_ID=local-gateway \
     TRPC_SERVICE_WORKER_CONCURRENCY=0 \

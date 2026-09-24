@@ -9,6 +9,7 @@
     <link rel="stylesheet" href="/admin/assets/admin.css">
   </head>
   <body class="platform-console">
+    <a class="skip-link" href="#main-content">跳到主要内容</a>
     <section id="login-shell" class="login-shell">
       <div class="login-story">
         <div class="story-content">
@@ -16,6 +17,7 @@
           <h1>系统管理，从全局状态开始</h1>
           <p>集中管理租户、模型、运行节点与审计策略。租户业务配置保持隔离，不在系统入口混合展示。</p>
           <div class="story-list"><span>平台级模型治理</span><span>运行节点观测</span><span>变更全程审计</span></div>
+          <div class="story-flow" aria-label="服务流程"><div><strong>连接团队</strong><small>企业微信 / 飞书</small></div><div><strong>理解需求</strong><small>Agent / 团队知识</small></div><div><strong>完成工作</strong><small>工具协作 / 可靠回复</small></div></div>
         </div>
       </div>
       <div class="login-panel">
@@ -51,10 +53,11 @@
         </nav>
         <div class="sidebar-foot"><p id="actor-name" class="actor-name"></p><p class="actor-role">系统管理员</p><button id="logout" class="button secondary small" type="button">退出登录</button></div>
       </aside>
-      <main class="workspace">
-        <header class="topbar"><div><p class="page-kicker">Platform control</p><h1 id="page-title">平台概览</h1></div><div class="top-actions"><a class="button secondary small" href="/docs" target="_blank" rel="noreferrer">API 文档</a></div></header>
+      <main class="workspace" id="main-content" tabindex="-1">
+        <header class="topbar"><div><p class="page-kicker">平台管理 / 工作空间</p><h1 id="page-title">平台概览</h1></div><div class="top-actions"><a class="button secondary small" href="/docs" target="_blank" rel="noreferrer">API 文档</a></div></header>
 
         <section id="overview" class="view active">
+          <div class="overview-intro"><div><span class="intro-mark" aria-hidden="true">P</span><h2>掌握平台的每一步运行</h2><p>查看资源与运行状态，管理团队的智能服务。</p></div><button class="button secondary" data-refresh="overview">刷新概览</button></div>
           <div class="metric-strip"><div class="metric"><span>租户总数</span><strong id="metric-tenants">—</strong><small>所有隔离空间</small></div><div class="metric"><span>可用模型</span><strong id="metric-models">—</strong><small>平台模型目录</small></div><div class="metric"><span>活跃 Worker</span><strong id="metric-workers">—</strong><small>最近心跳正常</small></div><div class="metric"><span>累计 Token</span><strong id="metric-tokens">—</strong><small>当前账本窗口</small></div></div>
           <div class="overview-grid"><article class="surface"><div class="surface-head"><h3>运行状态</h3><button class="button quiet small" data-refresh="overview">刷新</button></div><div class="surface-body health-list"><div class="health-item"><span>Gateway</span><strong id="health-gateway" class="badge">检查中</strong></div><div class="health-item"><span>数据库</span><strong id="health-database" class="badge">检查中</strong></div><div class="health-item"><span>Worker</span><strong id="health-worker" class="badge">检查中</strong></div></div></article><article class="surface"><div class="surface-head"><h3>快捷操作</h3></div><div class="surface-body quick-list"><button class="button secondary" data-open="tenant-dialog">创建租户</button><button class="button secondary" data-open="account-dialog">创建租户管理员账号</button><button class="button secondary" data-view-jump="runtime">查看运行节点</button></div></article></div>
         </section>
@@ -88,6 +91,7 @@
     <dialog id="credential-dialog"><div class="dialog-head"><div><h2 id="credential-dialog-title">登记模型凭据</h2><p>只登记可解析的 SecretRef，不填写 API Key 明文。</p></div><button class="dialog-close" data-close type="button">×</button></div><form id="credential-form" class="dialog-form"><input name="model_credential_id" type="hidden"><label class="field">Provider<select name="provider"><option value="bailian">bailian</option><option value="bailian_openai">bailian_openai</option></select></label><label class="field">凭据名称<input name="name" required></label><label class="field">SecretRef<input name="secret_ref" value="env://DASHSCOPE_API_KEY"><small id="credential-secret-help">SecretRef 指向环境变量或外部密钥管理器。</small></label><div class="dialog-actions"><button class="button secondary" data-close type="button">取消</button><button class="button" type="submit">登记凭据</button></div></form></dialog>
     <dialog id="profile-dialog"><div class="dialog-head"><div><h2 id="profile-dialog-title">创建租户模型策略</h2><p>策略控制 Agent 的模型、生成参数与预算限制。</p></div><button class="dialog-close" data-close type="button">×</button></div><form id="profile-form" class="dialog-form"><input name="model_profile_id" type="hidden"><label class="field">租户<select name="tenant_id" class="tenant-options" required></select></label><div class="field-row"><label>模型<select name="model_catalog_id" id="profile-model" required></select></label><label>凭据<select name="credential_id" id="profile-credential" required></select></label></div><label class="field">策略名称<input name="name" value="primary" required></label><div class="field-row"><label>温度<input name="temperature" type="number" min="0" max="2" step="0.1" value="0.2"></label><label>超时（秒）<input name="timeout_seconds" type="number" min="1" value="120"></label></div><div class="field-row"><label>最大输出 Token<input name="max_output_tokens" type="number" min="1" value="4096"></label><label>上下文窗口<input name="context_window_tokens" type="number" min="1" value="32768"></label></div><div class="field-row"><label>每日 Token<input name="daily_tokens" type="number" min="1"></label><label>每日调用次数<input name="daily_calls" type="number" min="1"></label></div><div class="dialog-actions"><button class="button secondary" data-close type="button">取消</button><button class="button" type="submit">创建策略</button></div></form></dialog>
     <dialog id="agent-profile-dialog"><div class="dialog-head"><div><h2>调整 Agent 模型策略</h2><p>保存后生成新的稳定配置版本，后续请求将使用新策略。</p></div><button class="dialog-close" data-close type="button">×</button></div><form id="agent-profile-form" class="dialog-form"><input name="agent_app_id" type="hidden"><input name="tenant_id" type="hidden"><label class="field">Agent<input name="agent_name" disabled></label><label class="field">模型策略<select name="model_profile_id" id="agent-profile-select" required></select></label><div class="inline-notice">只有状态正常、依赖完整的模型策略可以分配给 Agent。</div><div class="dialog-actions"><button class="button secondary" data-close type="button">取消</button><button class="button" type="submit">保存模型策略</button></div></form></dialog>
+    <script src="/console/config.js" defer></script>
     <script src="/console/assets/console.js" defer></script>
     <script src="/admin/assets/admin.js" defer></script>
   </body>

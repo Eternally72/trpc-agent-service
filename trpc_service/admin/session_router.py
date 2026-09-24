@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from trpc_service.admin.login_guard import password_work
 from trpc_service.admin.audit import append_management_audit
 from trpc_service.admin.auth import (
     ManagementActor,
@@ -55,11 +56,21 @@ async def login(
 ) -> ManagementActorRead:
     """Exchange a username/password for a revocable HttpOnly browser session."""
 
-    credential = await database.scalar(
-        select(ManagementPasswordCredential).where(
-            ManagementPasswordCredential.username == payload.username, ).with_for_update())
-    encoded = credential.password_hash if credential is not None else _DUMMY_PASSWORD_HASH
-    password_valid = verify_management_password(payload.password.get_secret_value(), encoded)
+    query = select(ManagementPasswordCredential).where(
+        ManagementPasswordCredential.username == payload.username)
+    source = request.client.host if request.client is not None else "unknown"
+    async with request.app.state.login_guard.admit(source):
+        credential = await database.scalar(query)
+        encoded = credential.password_hash if credential is not None else _DUMMY_PASSWORD_HASH
+        # Release the connection and avoid holding an account lock during the KDF.
+        await database.rollback()
+        password_valid = await password_work(verify_management_password,
+                                             payload.password.get_secret_value(), encoded)
+        credential = await database.scalar(
+            query.with_for_update().execution_options(populate_existing=True))
+        # A reset concurrent with verification must invalidate this authentication.
+        if credential is None or credential.password_hash != encoded:
+            password_valid = False
     now = datetime.now(timezone.utc)
     locked = (credential is not None and credential.locked_until is not None
               and as_utc(credential.locked_until) > now)

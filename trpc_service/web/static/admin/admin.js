@@ -35,7 +35,7 @@ function profileLabel(profileId) {
 }
 
 async function loadTenants() {
-  const data = await api("/tenants?limit=100");
+  const data = await api.all("/tenants");
   state.tenants = data.items;
   $("#tenant-rows").innerHTML = data.items.map((item) => `
     <tr><td><span class="row-title">${escapeHTML(item.name)}</span><span class="row-subtitle mono">${escapeHTML(item.tenant_id)}</span></td>
@@ -51,7 +51,7 @@ async function loadTenants() {
 }
 
 async function loadAccounts() {
-  const data = await api("/admin/principals?limit=100");
+  const data = await api.page("/admin/principals", "account-rows", loadAccounts);
   $("#account-rows").innerHTML = data.items.map((item) => {
     const isTenantAdmin = item.external_subject.startsWith("tenant-console:");
     const passwordAction = item.principal_type === "human" ? `<button class="button secondary small password-open" data-id="${item.management_principal_id}" data-subject="${escapeHTML(item.external_subject)}">重置密码</button>` : "";
@@ -101,7 +101,7 @@ async function loadProfiles() {
     $("#profile-agent-rows").innerHTML = empty(5, "请先创建可用租户");
     return { items: [], total: 0 };
   }
-  const [data, agents] = await Promise.all([api(`/tenants/${tenantId}/model-profiles`), api(`/tenants/${tenantId}/agents?limit=100`)]);
+  const [data, agents] = await Promise.all([api(`/tenants/${tenantId}/model-profiles`), api.all(`/tenants/${tenantId}/agents`)]);
   state.profiles = data.items; state.agents = agents.items;
   $("#profile-rows").innerHTML = data.items.map((item) => `<tr><td><span class="row-title">${escapeHTML(item.name)}</span><span class="row-subtitle mono">${escapeHTML(item.model_profile_id)}</span></td><td>${escapeHTML(modelLabel(item.model_catalog_id))}</td><td class="config-cell">${escapeHTML(JSON.stringify(item.parameter_config))}</td><td class="config-cell">${escapeHTML(JSON.stringify(item.limits))}</td><td>${badge(item.status)}</td><td><div class="actions"><button class="button secondary small profile-edit" data-id="${item.model_profile_id}">编辑</button>${item.status === "active" ? `<button class="button danger small profile-remove" data-id="${item.model_profile_id}">移除</button>` : `<button class="button secondary small profile-enable" data-id="${item.model_profile_id}">重新启用</button>`}</div></td></tr>`).join("") || empty(6);
   $("#profile-agent-rows").innerHTML = agents.items.map((item) => `<tr><td><span class="row-title">${escapeHTML(item.name)}</span><span class="row-subtitle mono">${escapeHTML(item.agent_app_id)}</span></td><td>${escapeHTML(profileLabel(item.model_profile_id))}</td><td>${badge(item.status)}</td><td>v${item.stable_config_version}</td><td><button class="button secondary small agent-profile-edit" data-id="${item.agent_app_id}">调整策略</button></td></tr>`).join("") || empty(5, "该租户暂无 Agent");
@@ -126,7 +126,7 @@ async function loadRuntime() {
 }
 
 async function loadUsage() {
-  const data = await api("/admin/usage?limit=100");
+  const data = await api.page("/admin/usage", "usage-rows", loadUsage);
   $("#usage-summary").textContent = `共 ${data.total} 条模型调用，${Number(data.summary.total_tokens).toLocaleString()} Token，预估成本 ${data.summary.estimated_cost}`;
   $("#usage-rows").innerHTML = data.items.map((item) => `<tr><td>${formatDate(item.occurred_at)}</td><td class="mono">${escapeHTML(item.tenant_id)}</td><td>${escapeHTML(item.model_provider)} / ${escapeHTML(item.model_name)}</td><td>${Number(item.total_tokens).toLocaleString()}</td><td>${escapeHTML(item.estimated_cost)}</td><td class="mono">${escapeHTML(item.request_id)}</td></tr>`).join("") || empty(6);
   return data;
@@ -140,7 +140,7 @@ async function loadAdapters() {
 }
 
 async function loadAudit() {
-  const data = await api("/admin/audit?limit=100");
+  const data = await api.page("/admin/audit", "audit-rows", loadAudit);
   $("#audit-rows").innerHTML = data.items.map((item) => `<tr><td>${formatDate(item.occurred_at)}</td><td><span class="row-title">${escapeHTML(item.action)}</span>${item.reason ? `<span class="row-subtitle">${escapeHTML(item.reason)}</span>` : ""}</td><td>${escapeHTML(item.resource_type)}<span class="row-subtitle mono">${escapeHTML(item.resource_id)}</span></td><td class="mono">${escapeHTML(item.actor_subject)}</td><td>${badge(item.decision)}</td></tr>`).join("") || empty(5);
   return data;
 }
@@ -156,9 +156,9 @@ async function loadOverview() {
   $("#metric-tokens").textContent = compactNumber(usage.summary.total_tokens);
   $("#health-gateway").textContent = health.status === "ok" ? "正常" : "异常";
   $("#health-database").textContent = ready.body?.checks?.database === "ok" ? "正常" : "异常";
-  $("#health-worker").textContent = ready.ok ? "正常" : "需检查";
+  $("#health-worker").textContent = ready.body?.checks?.worker_nodes > 0 ? "正常" : "暂无可用节点";
   $("#health-database").className = `badge ${ready.body?.checks?.database === "ok" ? "" : "error"}`;
-  $("#health-worker").className = `badge ${ready.ok ? "" : "warning"}`;
+  $("#health-worker").className = `badge ${ready.body?.checks?.worker_nodes > 0 ? "" : "warning"}`;
 }
 
 const loaders = { overview: loadOverview, tenants: loadTenants, accounts: loadAccounts, models: loadModels, credentials: loadCredentials, profiles: loadProfiles, runtime: loadRuntime, usage: loadUsage, adapters: loadAdapters, audit: loadAudit };
@@ -184,6 +184,7 @@ async function mutate({ button, request, success, refreshView, dialog, form }) {
 function showView(name) {
   $$(".nav-item").forEach((item) => item.classList.toggle("active", item.dataset.view === name));
   $$(".view").forEach((item) => item.classList.toggle("active", item.id === name));
+  $$(".nav-item").forEach((item) => { if (item.dataset.view === name) item.setAttribute("aria-current", "page"); else item.removeAttribute("aria-current"); });
   $("#page-title").textContent = titles[name] || "系统管理";
   refresh(name, { quiet: true }).catch(() => {});
 }

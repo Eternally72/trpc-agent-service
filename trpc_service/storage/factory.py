@@ -9,7 +9,7 @@ import boto3
 from botocore import UNSIGNED
 from botocore.config import Config
 from sqlalchemy.engine import URL, make_url
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine
 from openai import AsyncOpenAI
 
 from trpc_service.config.settings import Settings
@@ -29,7 +29,7 @@ from trpc_service.storage.adapters.postgresql_auxiliary import (
     PostgreSQLSummaryStore,
 )
 from trpc_service.storage.adapters.s3 import S3ArtifactStore, S3Client
-from trpc_service.storage.database import build_session_factory
+from trpc_service.storage.database import build_session_factory, configured_engine
 from trpc_service.storage.embedding import (
     BailianEmbeddingProvider,
     EmbeddingClient,
@@ -49,6 +49,7 @@ class StorageComposition:
     router: StorageRouter
     engines: tuple[AsyncEngine, ...] = ()
     initializers: tuple[Initializer, ...] = ()
+    finalizers: tuple[Initializer, ...] = ()
 
     async def initialize(self) -> None:
         """Initialize provider schemas after infrastructure becomes reachable."""
@@ -59,8 +60,14 @@ class StorageComposition:
     async def close(self) -> None:
         """Dispose every external SQL connection pool."""
 
-        for engine in self.engines:
-            await engine.dispose()
+        errors: list[Exception] = []
+        for close in (*self.finalizers, *(engine.dispose for engine in self.engines)):
+            try:
+                await close()
+            except Exception as error:
+                errors.append(error)
+        if errors:
+            raise ExceptionGroup("storage cleanup failed", errors)
 
 
 def _resolved_sql_url(url: str, password_ref: str | None) -> URL:
@@ -115,6 +122,7 @@ def build_storage_composition(
     engines: list[AsyncEngine] = []
     engines_by_url: dict[URL, AsyncEngine] = {}
     initializers: list[Initializer] = []
+    finalizers: list[Initializer] = []
 
     def sql_engine(config: PostgreSQLBackendConfig | PgVectorBackendConfig) -> AsyncEngine:
         """Share one connection pool when capabilities target the same database."""
@@ -122,7 +130,7 @@ def build_storage_composition(
         resolved_url = _resolved_sql_url(config.url, config.password_ref)
         engine = engines_by_url.get(resolved_url)
         if engine is None:
-            engine = create_async_engine(resolved_url, pool_pre_ping=True)
+            engine = configured_engine(resolved_url, settings)
             engines_by_url[resolved_url] = engine
             engines.append(engine)
         return engine
@@ -160,6 +168,7 @@ def build_storage_composition(
                     api_key=api_key,
                     base_url=embedding_config.base_url,
                 )
+                finalizers.append(client.close)
                 providers[config.embedding_provider] = BailianEmbeddingProvider(
                     cast(EmbeddingClient, client),
                     model=embedding_config.model_name,
@@ -191,4 +200,5 @@ def build_storage_composition(
         router=router,
         engines=tuple(engines),
         initializers=tuple(initializers),
+        finalizers=tuple(finalizers),
     )

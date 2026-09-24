@@ -3,6 +3,7 @@
 from collections.abc import AsyncIterator
 
 from fastapi import Request
+from sqlalchemy.engine import URL
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -16,7 +17,20 @@ from trpc_service.config import Settings
 def build_engine(settings: Settings) -> AsyncEngine:
     """Create an async engine and verify pooled connections before reuse."""
 
-    return create_async_engine(settings.resolved_database_url, pool_pre_ping=True)
+    return configured_engine(settings.resolved_database_url, settings)
+
+
+def configured_engine(url: URL, settings: Settings) -> AsyncEngine:
+    if url.get_backend_name() == "sqlite":
+        return create_async_engine(url, pool_pre_ping=True)
+    return create_async_engine(
+        url,
+        pool_pre_ping=True,
+        pool_size=settings.database_pool_size,
+        max_overflow=settings.database_max_overflow,
+        pool_timeout=settings.database_pool_timeout,
+        connect_args={"command_timeout": 30},
+    )
 
 
 def build_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:

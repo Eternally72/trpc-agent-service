@@ -30,7 +30,7 @@ async def test_agent_crud_is_scoped_to_its_tenant(api_client: httpx.AsyncClient)
                 "knowledge_base_ids": []
             },
             "backend_config": {
-                "session": "postgresql"
+                "session": "inmemory"
             },
         },
     )
@@ -91,6 +91,24 @@ async def test_agent_rejects_malformed_capability_policy_before_runtime(
     )
 
     assert response.status_code == 422
+
+
+@pytest.mark.anyio
+async def test_agent_rejects_unregistered_backend_at_save_time(
+    api_client: httpx.AsyncClient, ) -> None:
+    tenant_id = await _create_tenant(api_client, "Unknown Backend")
+    response = await api_client.post(
+        f"/api/v1/tenants/{tenant_id}/agents",
+        json={
+            "name": "Broken Agent",
+            "backend_config": {
+                "session": "missing"
+            }
+        },
+    )
+    assert response.status_code == 422
+    agents = await api_client.get(f"/api/v1/tenants/{tenant_id}/agents")
+    assert agents.json()["total"] == 0
 
 
 @pytest.mark.parametrize(

@@ -376,6 +376,28 @@ async def test_mcp_service_discovers_and_invokes_tenant_tool_through_public_port
     assert catalog[0]["risk_policy_version"] == 1
     assert result.content == "content:README.md"
 
+    changed_tool = _FakeRemoteTool()
+    changed_tool.annotations = {"readOnlyHint": False, "destructiveHint": True}
+    changed_toolset = _FakeToolset([changed_tool])
+    changed_service = TenantMCPService(
+        app.state.session_factory,
+        app.state.container.tenant_secrets,
+        toolset_factory=lambda *_: changed_toolset,
+        resolve_host=lambda _: ("8.8.8.8", ),
+    )
+    with pytest.raises(PermissionError, match="risk"):
+        await changed_service.invoke(
+            context,
+            AgentToolCall(
+                call_id="changed:0:mcp",
+                name=exposed_name,
+                kind=AgentToolKind.MCP,
+                logical_call_index=0,
+                resource=str(connection_id),
+                arguments={"path": "README.md"},
+            ))
+    assert changed_toolset.closed
+
     visible = await service.tools_for(
         context,
         GovernedToolInvoker(service),
@@ -743,7 +765,7 @@ async def test_trpc_mcp_adapter_uses_upstream_toolset_contract(
         name="Factory",
         timeout_seconds=3,
     )
-    factory_toolset = _default_toolset_factory(connection, {})
+    factory_toolset = _default_toolset_factory(connection, {}, ("8.8.8.8", ))
     await factory_toolset.close()
 
 

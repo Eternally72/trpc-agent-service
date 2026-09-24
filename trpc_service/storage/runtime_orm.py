@@ -534,6 +534,8 @@ class OutboxMessageRow(Base, TimestampMixin):
             postgresql_where=text("status IN ('PENDING', 'RETRYABLE_FAILED')"),
         ),
         Index("ix_outbox_message_scope_request", "tenant_id", "agent_app_id", "request_id"),
+        Index("ix_outbox_message_stream_order", "tenant_id", "agent_app_id", "binding_id",
+              "session_id", "status", "created_at", "sequence_no"),
     )
 
     tenant_id: Mapped[UUID] = mapped_column(primary_key=True)

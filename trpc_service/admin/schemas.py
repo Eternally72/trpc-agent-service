@@ -178,7 +178,7 @@ class PasswordCredentialSet(BaseModel):
 
 class PasswordLogin(BaseModel):
     username: str = Field(min_length=3, max_length=120)
-    password: SecretStr
+    password: SecretStr = Field(min_length=1, max_length=256)
 
     @field_validator("username")
     @classmethod

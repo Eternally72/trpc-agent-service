@@ -256,8 +256,8 @@ async def update_model_profile(
         raise HTTPException(status_code=409, detail="model is not in platform catalog")
     raw_credential_id = changes.pop("credential_id", row.model_credential_id)
     credential_id = None if raw_credential_id is None else UUID(str(raw_credential_id))
-    credential = (None if credential_id is None else await
-                  session.get(ModelProviderCredential, credential_id))
+    credential = (None if credential_id is None else await session.get(
+        ModelProviderCredential, credential_id))
     if credential_id is not None and credential is None:
         raise HTTPException(status_code=409, detail="model credential does not exist")
     target_status = str(changes.get("status", row.status))

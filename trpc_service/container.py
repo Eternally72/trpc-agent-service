@@ -178,6 +178,7 @@ def build_application_container(
     if not callable(agent_runner_factory):
         raise TypeError("agent_runner_factory must be callable")
 
+    settings.validate_execution_backends({})
     app_settings = settings
     telemetry = PlatformTelemetry(
         service_name=app_settings.service_name,

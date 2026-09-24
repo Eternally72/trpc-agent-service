@@ -26,7 +26,7 @@ def test_default_application_container_owns_extension_registries() -> None:
     # covering the code-level, all-in-memory fallback configuration.
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     container = build_application_container(
-        settings=Settings(_env_file=None),
+        settings=Settings(_env_file=None, database_url="sqlite+aiosqlite:///:memory:"),
         session_factory=async_sessionmaker(engine, expire_on_commit=False),
     )
 
@@ -104,6 +104,7 @@ async def test_container_close_releases_later_resources_after_an_earlier_failure
     container = build_application_container(
         settings=Settings(
             _env_file=None,
+            database_url="sqlite+aiosqlite:///:memory:",
             worker_concurrency=0,
             delivery_concurrency=0,
         ),
@@ -123,6 +124,7 @@ def test_channel_runtime_composes_wecom_transport_without_agent_slots() -> None:
     container = build_application_container(
         settings=Settings(
             _env_file=None,
+            database_url="sqlite+aiosqlite:///:memory:",
             runtime_role="channel",
             worker_concurrency=0,
         ),

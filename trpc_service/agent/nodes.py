@@ -6,7 +6,7 @@ from enum import StrEnum
 import logging
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from trpc_service.storage.orm import as_utc, utc_now
@@ -157,10 +157,16 @@ class PostgreSQLRuntimeNodeRegistry:
     async def active_worker_count(self) -> int:
         """Count fresh Worker-capable nodes for readiness checks."""
 
-        nodes = await self.list()
-        return sum(
-            node.health is RuntimeNodeHealth.ACTIVE and node.role in {"worker", "api_worker"}
-            for node in nodes.items)
+        cutoff = utc_now() - timedelta(seconds=self._stale_after_seconds)
+        async with self._sessions() as database:
+            count = await database.scalar(
+                select(func.count()).select_from(RuntimeNodeRow).where(
+                    RuntimeNodeRow.status == "active",
+                    RuntimeNodeRow.role.in_(("worker", "api_worker")),
+                    RuntimeNodeRow.heartbeat_at >= cutoff,
+                    RuntimeNodeRow.worker_concurrency > 0,
+                ))
+        return int(count or 0)
 
 
 class RuntimeNodeHeartbeatService:

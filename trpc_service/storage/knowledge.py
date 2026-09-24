@@ -1,5 +1,9 @@
 """Tenant-owned knowledge ingestion, retrieval, and file normalization."""
 
+import asyncio
+import json
+import sys
+from zipfile import ZipFile
 import hashlib
 import logging
 from collections.abc import AsyncIterator, Mapping, Sequence
@@ -73,11 +77,26 @@ class KnowledgeFileParser:
                 raise ValueError("knowledge text file must use UTF-8 encoding") from error
         elif suffix == ".pdf" or media_type == "application/pdf":
             reader = PdfReader(source)
-            text = "\n\n".join(page.extract_text() or "" for page in reader.pages)
+            if len(reader.pages) > 500:
+                raise ValueError("knowledge PDF exceeds the 500 page limit")
+            parts = []
+            extracted = 0
+            for page in reader.pages:
+                part = page.extract_text() or ""
+                extracted += len(part)
+                if extracted > self._max_extracted_chars:
+                    raise ValueError("knowledge file has too much extracted text")
+                parts.append(part)
+            text = "\n\n".join(parts)
         elif suffix == ".docx" or media_type == (
                 "application/vnd.openxmlformats-officedocument.wordprocessingml.document"):
             # python-docx accepts a seekable file-like object; copying avoids a
             # provider-specific stream retaining ownership of the upload handle.
+            with ZipFile(source) as archive:
+                if (len(archive.infolist()) > 2000
+                        or sum(item.file_size for item in archive.infolist()) > 32 * 1024 * 1024):
+                    raise ValueError("knowledge DOCX exceeds the expanded file limit")
+            source.seek(0)
             document = DocxDocument(BytesIO(source.read()))
             text = "\n".join(paragraph.text for paragraph in document.paragraphs)
         else:
@@ -226,9 +245,39 @@ class TenantKnowledgeService:
         self._storage = storage
         self._default_backends = dict(default_backends or {})
         self._parser = KnowledgeFileParser()
+        self._parse_slots = asyncio.Semaphore(2)
         self._chunker = TextChunker()
         self._max_file_bytes = max_file_bytes
         self._ingest_lease_seconds = ingest_lease_seconds
+
+    async def _parse(self, filename: str, media_type: str, payload: bytes) -> str:
+        async with self._parse_slots:
+            if Path(filename).suffix.lower() in self._parser._TEXT_SUFFIXES:
+                return await asyncio.to_thread(self._parser.parse, filename, media_type,
+                                               BytesIO(payload))
+            process = await asyncio.create_subprocess_exec(
+                sys.executable,
+                "-m",
+                "trpc_service.storage.parse_worker",
+                filename,
+                media_type,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            try:
+                async with asyncio.timeout(25):
+                    stdout, _ = await process.communicate(payload)
+                if process.returncode != 0:
+                    raise ValueError("document parsing failed or exceeded its resource limit")
+                result = json.loads(stdout)
+                if not isinstance(result, str):
+                    raise ValueError("invalid document parser response")
+                return result
+            finally:
+                if process.returncode is None:
+                    process.kill()
+                    await process.wait()
 
     def _stores(
         self,
@@ -517,7 +566,7 @@ class TenantKnowledgeService:
             if retry_chunk_ids:
                 await knowledge.delete(context, str(base_id), retry_chunk_ids)
             payload = b"".join([block async for block in artifacts.open(context, artifact_id)])
-            text = self._parser.parse(filename, media_type, BytesIO(payload))
+            text = await self._parse(filename, media_type, payload)
             chunks = self._chunker.split(text)
             if not chunks:
                 raise ValueError("knowledge file produced no chunks")
