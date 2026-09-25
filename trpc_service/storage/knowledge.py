@@ -230,6 +230,7 @@ class TenantKnowledgeService:
         artifacts: ArtifactStore | None = None,
         storage: StorageRouter | None = None,
         default_backends: Mapping[str, object] | None = None,
+        embedding_model: str = "text-embedding-v4",
         max_file_bytes: int = MAX_KNOWLEDGE_FILE_BYTES,
         ingest_lease_seconds: int = 15 * 60,
     ) -> None:
@@ -239,6 +240,9 @@ class TenantKnowledgeService:
             raise ValueError("knowledge service requires fixed stores or a storage router")
         if storage is not None and (knowledge is not None or artifacts is not None):
             raise ValueError("knowledge service cannot mix fixed stores and a storage router")
+        if not embedding_model.strip():
+            raise ValueError("embedding model must not be empty")
+        self._embedding_model = embedding_model
         self._sessions = sessions
         self._knowledge = knowledge
         self._artifacts = artifacts
@@ -465,12 +469,15 @@ class TenantKnowledgeService:
                     KnowledgeBaseRow.name == knowledge_base_name,
                     KnowledgeBaseRow.status == "ACTIVE",
                 ))
+            if base is not None:
+                self._validate_embedding_model(base)
             if base is None:
                 if replace_document_id is not None:
                     raise LookupError("knowledge document does not exist in this tenant base")
                 base = KnowledgeBaseRow(
                     tenant_id=context.tenant_id,
                     name=knowledge_base_name,
+                    embedding_model=self._embedding_model,
                 )
                 database.add(base)
                 await database.flush()
@@ -688,6 +695,10 @@ class TenantKnowledgeService:
                            KnowledgeDocumentRow.version.desc()))).all()
         return tuple(_document_state(row) for row in rows)
 
+    def _validate_embedding_model(self, base: KnowledgeBaseRow) -> None:
+        if base.embedding_model != self._embedding_model:
+            raise ValueError("knowledge embedding model changed; reindex this knowledge base first")
+
     async def search(
         self,
         context: TenantContext,
@@ -706,12 +717,15 @@ class TenantKnowledgeService:
         if not names:
             return ()
         async with self._sessions() as database:
-            base_ids = (await database.scalars(
-                select(KnowledgeBaseRow.knowledge_base_id).where(
+            bases = (await database.scalars(
+                select(KnowledgeBaseRow).where(
                     KnowledgeBaseRow.tenant_id == context.tenant_id,
                     KnowledgeBaseRow.name.in_(names),
                     KnowledgeBaseRow.status == "ACTIVE",
                 ))).all()
+        for base in bases:
+            self._validate_embedding_model(base)
+        base_ids = [base.knowledge_base_id for base in bases]
         hits: list[KnowledgeHit] = []
         for base_id in base_ids:
             hits.extend(await knowledge.search(context, str(base_id), query, limit))

@@ -588,3 +588,53 @@ def test_knowledge_service_rejects_mixed_storage_composition() -> None:
             artifacts=backend.artifact,
             storage=StorageRouter(registry),
         )
+
+
+@pytest.mark.anyio
+async def test_embedding_model_change_requires_reindex_before_read_or_write(tmp_path: Path) -> None:
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'model-change.db'}")
+    sessions = build_session_factory(engine)
+    tenant_id, agent_id = uuid4(), uuid4()
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        async with sessions.begin() as database:
+            database.add(Tenant(tenant_id=tenant_id, name="model-change"))
+            database.add(AgentApp(agent_app_id=agent_id, tenant_id=tenant_id, name="agent"))
+        backend = build_inmemory_backend()
+        service = TenantKnowledgeService(sessions,
+                                         knowledge=backend.knowledge,
+                                         artifacts=backend.artifact,
+                                         embedding_model="qwen3.7-text-embedding")
+        context = TenantContext(tenant_id=tenant_id,
+                                agent_app_id=agent_id,
+                                config_version=1,
+                                request_id="model-change",
+                                trace_id="test")
+        config = {"knowledge_base_names": ["handbook"]}
+        upload = await service.upload(context,
+                                      principal_id="admin",
+                                      filename="test.txt",
+                                      media_type="text/plain",
+                                      content=_content(b"Knowledge"))
+        await service.ingest(context,
+                             config,
+                             knowledge_base_name="handbook",
+                             artifact_ids=[upload.artifact_id])
+        async with sessions() as database:
+            base = await database.scalar(select(KnowledgeBaseRow))
+            assert base is not None
+            assert base.embedding_model == "qwen3.7-text-embedding"
+        changed = TenantKnowledgeService(sessions,
+                                         knowledge=backend.knowledge,
+                                         artifacts=backend.artifact,
+                                         embedding_model="other-model")
+        with pytest.raises(ValueError, match="reindex"):
+            await changed.search(context, config, "Knowledge")
+        with pytest.raises(ValueError, match="reindex"):
+            await changed.ingest(context,
+                                 config,
+                                 knowledge_base_name="handbook",
+                                 artifact_ids=[upload.artifact_id])
+    finally:
+        await engine.dispose()

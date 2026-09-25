@@ -201,6 +201,7 @@ def build_application_container(
         session_factory,
         storage=composition.router,
         default_backends=app_settings.storage_profile.model_dump(mode="json"),
+        embedding_model=app_settings.embedding.model_name,
     )
     channels = ChannelAdapterRegistry()
     config_provider = DatabaseAgentConfigProvider(app_settings, session_factory)

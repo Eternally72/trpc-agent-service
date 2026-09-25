@@ -122,6 +122,7 @@ async def _hydrate_session(
                 id=event.event_id,
                 invocation_id=event.event_id,
                 author=author,
+                branch="assistant" if role == "model" else None,
                 timestamp=event.occurred_at.timestamp(),
                 content=Content(role=role, parts=[Part.from_text(text=text)]),
             ),
@@ -217,6 +218,7 @@ async def _run_sdk_turn(
     )
     final_text = ""
     usage = AgentUsage()
+    model_error: RuntimeError | None = None
     async for event in runner.run_async(
             user_id=scoped_user_id,
             session_id=scoped_session_id,
@@ -231,17 +233,27 @@ async def _run_sdk_turn(
                                       and bool(event.get_function_responses()))
             if recoverable_tool_error:
                 continue
-            raise RuntimeError(f"tRPC Agent execution failed: {event.error_code or 'unknown'}")
+            # Let the SDK unwind its nested generators in this task. Raising
+            # at a yield leaves tracing ContextVars to a foreign GC task.
+            if model_error is None:
+                model_error = RuntimeError(
+                    f"tRPC Agent execution failed: {event.error_code or 'unknown'}")
+            continue
         if event.is_final_response():
-            final_text = event.get_text()
-        if event.usage_metadata is not None:
+            # SDK get_text() also includes thought=True reasoning parts.
+            # Only the public answer may enter Session facts or the Outbox.
+            final_text = "".join(part.text for part in event.content.parts
+                                 if part.text and not part.thought) if event.content else ""
+        if event.usage_metadata is not None and not event.partial:
             metadata = event.usage_metadata
             usage = AgentUsage(
-                input_tokens=metadata.prompt_token_count or 0,
-                output_tokens=metadata.candidates_token_count or 0,
-                total_tokens=metadata.total_token_count or 0,
+                input_tokens=usage.input_tokens + (metadata.prompt_token_count or 0),
+                output_tokens=usage.output_tokens + (metadata.candidates_token_count or 0),
+                total_tokens=usage.total_tokens + (metadata.total_token_count or 0),
             )
 
+    if model_error is not None:
+        raise model_error
     if final_text.strip() == "":
         raise RuntimeError("tRPC Agent returned no final text response")
 

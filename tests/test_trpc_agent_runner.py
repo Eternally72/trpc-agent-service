@@ -593,3 +593,130 @@ async def test_trpc_runner_closes_request_scoped_sdk_runner(
 
     assert result.replies[0].text == "Agent 回复"
     assert closed is True
+
+
+@pytest.mark.anyio
+async def test_reasoning_parts_never_enter_reply_or_durable_history() -> None:
+
+    class ReasoningRunner:
+
+        async def run_async(self, **kwargs: object) -> AsyncIterator[Event]:
+            yield Event(
+                author="assistant",
+                content=Content(role="model",
+                                parts=[
+                                    Part(text="private reasoning", thought=True),
+                                    Part(text="最终答案"),
+                                ]),
+            )
+
+    result = await _run_sdk_turn(_sdk_runner(ReasoningRunner()), _context(), UnusedToolInvoker())
+    assert result.replies[0].text == "最终答案"
+    assert result.events[-1].payload["text"] == "最终答案"
+
+
+@pytest.mark.anyio
+async def test_reasoning_only_response_is_not_a_successful_reply() -> None:
+
+    class ReasoningRunner:
+
+        async def run_async(self, **kwargs: object) -> AsyncIterator[Event]:
+            yield Event(author="assistant",
+                        content=Content(role="model",
+                                        parts=[
+                                            Part(text="private reasoning", thought=True),
+                                        ]))
+
+    with pytest.raises(RuntimeError, match="no final text"):
+        await _run_sdk_turn(_sdk_runner(ReasoningRunner()), _context(), UnusedToolInvoker())
+
+
+@pytest.mark.anyio
+async def test_sdk_error_stream_finishes_in_consuming_task() -> None:
+    from contextvars import ContextVar
+
+    marker: ContextVar[str] = ContextVar("sdk_stream_marker", default="outside")
+    finished = []
+
+    class ErrorRunner:
+
+        async def run_async(self, **kwargs: object) -> AsyncIterator[Event]:
+            token = marker.set("inside")
+            try:
+                yield Event(author="assistant", errorCode="MODEL_ERROR")
+            finally:
+                marker.reset(token)
+                finished.append(True)
+
+    with pytest.raises(RuntimeError, match="MODEL_ERROR"):
+        await _run_sdk_turn(_sdk_runner(ErrorRunner()), _context(), UnusedToolInvoker())
+    assert finished == [True]
+    assert marker.get() == "outside"
+
+
+@pytest.mark.anyio
+async def test_tool_turn_usage_includes_every_model_call() -> None:
+
+    class ToolTurnRunner:
+
+        async def run_async(self, **kwargs: object) -> AsyncIterator[Event]:
+            yield Event(
+                author="assistant",
+                content=Content(role="model",
+                                parts=[
+                                    Part.from_function_call(name="calculate",
+                                                            args={"expression": "2+3"}),
+                                ]),
+                usageMetadata=GenerateContentResponseUsageMetadata(promptTokenCount=100,
+                                                                   candidatesTokenCount=20,
+                                                                   totalTokenCount=120),
+            )
+            yield Event(
+                author="assistant",
+                content=Content(role="model", parts=[Part(text="5")]),
+                usageMetadata=GenerateContentResponseUsageMetadata(promptTokenCount=150,
+                                                                   candidatesTokenCount=10,
+                                                                   totalTokenCount=160),
+            )
+
+    result = await _run_sdk_turn(_sdk_runner(ToolTurnRunner()), _context(), UnusedToolInvoker())
+    assert result.usage.input_tokens == 250
+    assert result.usage.output_tokens == 30
+    assert result.usage.total_tokens == 280
+
+
+@pytest.mark.anyio
+async def test_real_sdk_preserves_restored_conversation_roles(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exercise the SDK history processor, not only the stored Event objects."""
+    from trpc_agent_sdk.models import LlmRequest, LlmResponse, OpenAIModel
+
+    messages = []
+
+    async def capture_model(self: object, request: LlmRequest, stream: bool,
+                            ctx: object) -> AsyncIterator[LlmResponse]:
+        messages.extend((content.role, "".join(part.text or "" for part in content.parts))
+                        for content in request.contents)
+        yield LlmResponse(content=Content(role="model", parts=[Part(text="当前答案")]))
+
+    monkeypatch.setattr(OpenAIModel, "_generate_async_impl", capture_model)
+    context = _context()
+    context = replace(context,
+                      session=SessionSnapshot(
+                          session_id=context.request.session_id,
+                          version=2,
+                          events=(
+                              SessionEvent(event_id="old-user",
+                                           event_type="message.received",
+                                           occurred_at=datetime.now(timezone.utc),
+                                           payload={"text": "旧问题"}),
+                              SessionEvent(event_id="old-model",
+                                           event_type="agent.replied",
+                                           occurred_at=datetime.now(timezone.utc),
+                                           payload={"text": "旧答案"}),
+                          )))
+    runner = TRPCAgentRunner(Settings(_env_file=None, dashscope_api_key=SecretStr("test")),
+                             skills=BuiltinSkillCatalog())
+    result = await runner.run(context, UnusedToolInvoker())
+    assert result.replies[0].text == "当前答案"
+    assert messages == [("user", "旧问题"), ("model", "旧答案"), ("user", "用户消息")]
