@@ -160,16 +160,22 @@
     }
     notice.textContent = "正在加载最新数据…"; notice.classList.remove("error"); notice.hidden = false;
     section.setAttribute("aria-busy", "true");
-    const buttons = $$(`[data-refresh="${view}"]`);
-    const disabled = buttons.map((button) => button.disabled);
-    buttons.forEach((button) => { button.disabled = true; });
+    // Keep the filter context stable while its table is being fetched. A
+    // coalesced refresh must never render tenant A beneath tenant B's selector.
+    const controls = [...$$(`[data-refresh="${view}"]`), ...$$("select", section)];
+    const disabled = controls.map((control) => control.disabled);
+    controls.forEach((control) => { control.disabled = true; });
+    const tables = $$(".data-surface", section);
+    tables.forEach((table) => { table.inert = true; });
+    let loaded = false;
     const pending = Promise.resolve().then(operation).then((result) => {
-      notice.hidden = true; return result;
+      loaded = true; notice.hidden = true; return result;
     }).catch((error) => {
-      notice.textContent = "数据加载失败，请刷新重试。"; notice.classList.add("error"); throw error;
+      notice.textContent = "数据加载失败，已暂停表格操作，请刷新重试。"; notice.classList.add("error"); throw error;
     }).finally(() => {
       section.setAttribute("aria-busy", "false");
-      buttons.forEach((button, index) => { button.disabled = disabled[index]; });
+      controls.forEach((control, index) => { control.disabled = disabled[index]; });
+      tables.forEach((table) => { table.inert = !loaded; });
       loadingViews.delete(view);
     });
     loadingViews.set(view, pending);
