@@ -49,13 +49,20 @@ class StorageComposition:
     router: StorageRouter
     engines: tuple[AsyncEngine, ...] = ()
     initializers: tuple[Initializer, ...] = ()
+    provisioners: tuple[Initializer, ...] = ()
     finalizers: tuple[Initializer, ...] = ()
 
     async def initialize(self) -> None:
-        """Initialize provider schemas after infrastructure becomes reachable."""
+        """Validate provider infrastructure using the runtime identity."""
 
         for initializer in self.initializers:
             await initializer()
+
+    async def provision(self) -> None:
+        """Create provider infrastructure only in the explicit deployment step."""
+
+        for provisioner in self.provisioners:
+            await provisioner()
 
     async def close(self) -> None:
         """Dispose every external SQL connection pool."""
@@ -101,6 +108,12 @@ def _build_s3_store(config: S3BackendConfig) -> S3ArtifactStore:
         aws_secret_access_key=secret_key,
         config=Config(
             signature_version=signature_version,
+            connect_timeout=5,
+            read_timeout=30,
+            retries={
+                "mode": "standard",
+                "max_attempts": 2
+            },
             s3={"addressing_style": "path" if config.path_style else "virtual"},
         ),
     )
@@ -122,6 +135,7 @@ def build_storage_composition(
     engines: list[AsyncEngine] = []
     engines_by_url: dict[URL, AsyncEngine] = {}
     initializers: list[Initializer] = []
+    provisioners: list[Initializer] = []
     finalizers: list[Initializer] = []
 
     def sql_engine(config: PostgreSQLBackendConfig | PgVectorBackendConfig) -> AsyncEngine:
@@ -182,12 +196,15 @@ def build_storage_composition(
                     f"embedding provider is not registered: {config.embedding_provider}") from error
             engine = sql_engine(config)
             vector_store = PgVectorKnowledgeStore(build_session_factory(engine), provider)
-            initializers.append(vector_store.ensure_schema)
+            initializers.append(vector_store.validate_schema)
+            provisioners.append(vector_store.ensure_schema)
             registry.register(StorageBackend(name=name, knowledge=vector_store))
             continue
         if isinstance(config, S3BackendConfig):
             artifact_store = _build_s3_store(config)
-            initializers.append(artifact_store.ensure_bucket)
+            initializers.append(artifact_store.validate_bucket)
+            provisioners.append(artifact_store.ensure_bucket)
+            finalizers.append(artifact_store.close)
             registry.register(StorageBackend(name=name, artifact=artifact_store))
             continue
         raise TypeError(f"unsupported storage backend configuration: {type(config).__name__}")
@@ -200,5 +217,6 @@ def build_storage_composition(
         router=router,
         engines=tuple(engines),
         initializers=tuple(initializers),
+        provisioners=tuple(provisioners),
         finalizers=tuple(finalizers),
     )

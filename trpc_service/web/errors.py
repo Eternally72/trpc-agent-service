@@ -1,6 +1,7 @@
 """Stable public error models and FastAPI exception handlers."""
 
 import logging
+from collections.abc import Mapping
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -26,11 +27,13 @@ class ErrorResponse(BaseModel):
     error: ErrorDetail
 
 
-def _error_response(status_code: int, detail: ErrorDetail) -> JSONResponse:
+def _error_response(status_code: int,
+                    detail: ErrorDetail,
+                    headers: Mapping[str, str] | None = None) -> JSONResponse:
     """Serialize one error using the service-wide public contract."""
 
     payload = ErrorResponse(error=detail).model_dump(mode="json", exclude_none=True)
-    return JSONResponse(status_code=status_code, content=payload)
+    return JSONResponse(status_code=status_code, content=payload, headers=headers)
 
 
 def install_exception_handlers(app: FastAPI) -> None:
@@ -43,11 +46,14 @@ def install_exception_handlers(app: FastAPI) -> None:
         codes = {
             404: "not_found",
             409: "conflict",
+            413: "payload_too_large",
+            429: "rate_limited",
         }
         message = error.detail if isinstance(error.detail, str) else "request failed"
         return _error_response(
             error.status_code,
             ErrorDetail(code=codes.get(error.status_code, "http_error"), message=message),
+            headers=error.headers,
         )
 
     @app.exception_handler(RequestValidationError)

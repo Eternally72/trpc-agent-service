@@ -10,7 +10,7 @@ const titles = {
 
 const {
   $, $$, escapeHTML, createApi, toast, setLoginError, badge, empty,
-  formatDate, compactNumber, setOptions,
+  formatDate, compactNumber, setOptions, withLoading,
 } = window.ConsoleUI;
 const api = createApi(state, "interactive platform administration");
 
@@ -164,7 +164,7 @@ async function loadOverview() {
 const loaders = { overview: loadOverview, tenants: loadTenants, accounts: loadAccounts, models: loadModels, credentials: loadCredentials, profiles: loadProfiles, runtime: loadRuntime, usage: loadUsage, adapters: loadAdapters, audit: loadAudit };
 
 async function refresh(view, { quiet = false } = {}) {
-  try { await loaders[view]?.(); if (!quiet) toast("数据已刷新"); }
+  try { await withLoading(view, loaders[view]); if (!quiet) toast("数据已刷新"); }
   catch (error) { toast(error.message, "error"); throw error; }
 }
 
@@ -355,7 +355,7 @@ async function enterConsole() {
   }
   state.actor = actor; $("#actor-name").textContent = actor.subject;
   $("#login-shell").hidden = true; $("#app-shell").hidden = false; setLoginError();
-  await loadOverview();
+  await withLoading("overview", loadOverview);
 }
 
 async function logout() {

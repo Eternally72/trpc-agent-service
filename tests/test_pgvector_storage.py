@@ -91,6 +91,18 @@ class FakeSessions:
 
 
 @pytest.mark.anyio
+async def test_pgvector_runtime_validation_never_provisions_infrastructure() -> None:
+    sessions = FakeSessions()
+    store = PgVectorKnowledgeStore(sessions, FixedEmbedding())  # type: ignore[arg-type]
+    await store.validate_schema()
+    assert all(sql.strip().startswith("SELECT") for sql, _ in sessions.database.executions)
+    assert any("LIMIT 0" in sql for sql, _ in sessions.database.executions)
+    sessions.database.column_type = "vector(7)"
+    with pytest.raises(EmbeddingDimensionError, match="migration identity"):
+        await store.validate_schema()
+
+
+@pytest.mark.anyio
 async def test_pgvector_rejects_embedding_dimension_mismatch_before_writing() -> None:
     store = PgVectorKnowledgeStore(object(), WrongDimensionEmbedding())  # type: ignore[arg-type]
     context = TenantContext(

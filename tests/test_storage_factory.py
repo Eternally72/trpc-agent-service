@@ -1,10 +1,14 @@
 from collections.abc import Sequence
 
 from pydantic import SecretStr
+import pytest
 
 from trpc_service.config import Settings
 from trpc_service.storage import EmbeddingProvider
-from trpc_service.storage.factory import build_storage_composition
+from trpc_service.storage.factory import StorageComposition, build_storage_composition
+from trpc_service.storage.registry import StorageBackendRegistry
+from trpc_service.storage.router import StorageRouter
+from trpc_service.storage import provision
 
 
 class FixedEmbedding(EmbeddingProvider):
@@ -97,3 +101,38 @@ def test_storage_factory_composes_default_bailian_embedding_from_settings() -> N
     composition = build_storage_composition(settings)
 
     assert composition.registry.names == ("facts", "vectors")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("validation_fails", [False, True])
+async def test_explicit_storage_provisioning_validates_then_closes_on_all_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    validation_fails: bool,
+) -> None:
+    events: list[str] = []
+
+    async def create() -> None:
+        events.append("create")
+
+    async def validate() -> None:
+        events.append("validate")
+        if validation_fails:
+            raise RuntimeError("permission denied")
+
+    async def close() -> None:
+        events.append("close")
+
+    registry = StorageBackendRegistry()
+    composition = StorageComposition(registry,
+                                     StorageRouter(registry),
+                                     initializers=(validate, ),
+                                     provisioners=(create, ),
+                                     finalizers=(close, ))
+    monkeypatch.setattr(provision, "build_storage_composition", lambda _: composition)
+    monkeypatch.setattr(provision, "get_settings", lambda: Settings(_env_file=None))
+    if validation_fails:
+        with pytest.raises(RuntimeError, match="permission denied"):
+            await provision.provision_storage()
+    else:
+        await provision.provision_storage()
+    assert events == ["create", "validate", "close"]

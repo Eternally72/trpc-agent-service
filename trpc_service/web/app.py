@@ -39,6 +39,7 @@ from trpc_service.storage.orm import Base
 from trpc_service.tenant.router import router as tenant_router
 from trpc_service.version import __version__
 from trpc_service.web.errors import install_exception_handlers
+from trpc_service.web.body_limit import RequestBodyLimitMiddleware
 
 
 def create_app(
@@ -76,6 +77,9 @@ def create_app(
                     await app_engine.dispose()
 
     app = FastAPI(title=app_settings.service_name, version=__version__, lifespan=lifespan)
+    app.add_middleware(RequestBodyLimitMiddleware,
+                       api_prefix=app_settings.api_prefix,
+                       max_bytes=app_settings.http_max_body_bytes)
 
     @app.middleware("http")
     async def observe_http(request: Request, call_next):  # type: ignore[no-untyped-def]

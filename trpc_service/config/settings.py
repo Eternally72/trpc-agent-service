@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     session_cache_ttl_seconds: int = Field(default=30 * 60, ge=60, le=24 * 60 * 60)
     session_cache_max_events: int = Field(default=40, ge=2, le=200)
     api_prefix: str = "/api/v1"
+    http_max_body_bytes: int = Field(default=1024 * 1024, ge=1024, le=10 * 1024 * 1024)
     database_pool_size: int = Field(default=5, ge=1, le=100)
     database_max_overflow: int = Field(default=5, ge=0, le=100)
     database_pool_timeout: float = Field(default=10, gt=0, le=60)

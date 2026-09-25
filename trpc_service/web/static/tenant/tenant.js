@@ -8,7 +8,7 @@ const titles = {
 };
 const {
   $, $$, escapeHTML, createApi, toast, setLoginError, badge, empty,
-  formatDate, setOptions,
+  formatDate, setOptions, statusLabel, withLoading,
 } = window.ConsoleUI;
 const api = createApi(state);
 
@@ -328,7 +328,7 @@ async function loadOverview() {
   $("#tenant-isolation").textContent = tenant.isolation_mode;
   $("#tenant-role").textContent = currentRoles().includes("tenant_admin") ? "租户管理员" : "—";
   const status = $("#tenant-status");
-  status.textContent = tenant.status;
+  status.textContent = statusLabel(tenant.status);
   status.className = `badge ${String(tenant.status || "unknown").toLowerCase()}`;
 }
 
@@ -338,7 +338,7 @@ const loaders = {
 };
 
 async function refresh(view, { quiet = false } = {}) {
-  try { await loaders[view]?.(); if (!quiet) toast("数据已刷新"); }
+  try { await withLoading(view, loaders[view]); if (!quiet) toast("数据已刷新"); }
   catch (error) { toast(error.message, "error"); throw error; }
 }
 
@@ -378,7 +378,7 @@ async function enterConsole() {
   $("#login-shell").hidden = true;
   $("#app-shell").hidden = false;
   setLoginError();
-  await loadOverview();
+  await withLoading("overview", loadOverview);
 }
 
 async function logout() {

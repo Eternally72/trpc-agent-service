@@ -8,6 +8,7 @@ from uuid import uuid4
 
 import pytest
 from redis.asyncio import Redis
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from trpc_service.agent import RedisExecutionLeaseCoordinator, RedisOutboxNotifier
@@ -114,7 +115,14 @@ async def test_real_storage_components_complete_the_provider_neutral_chain() -> 
         embedding_providers={"test": DeterministicEmbedding()},
     )
     assert len(composition.engines) == 1
+    await composition.provision()
     await composition.initialize()
+    async with composition.engines[0].begin() as connection:
+        await connection.execute(text("SET TRANSACTION READ ONLY"))
+        assert await connection.scalar(text("SHOW transaction_read_only")) == "on"
+        readonly_store = PgVectorKnowledgeStore(async_sessionmaker(connection),
+                                                DeterministicEmbedding())
+        await readonly_store.validate_schema()
     stores = composition.router.resolve(settings.storage_profile.to_domain())
     tenant_id = uuid4()
     agent_app_id = uuid4()
@@ -297,6 +305,7 @@ async def test_postgresql_budget_reservation_is_atomic_across_connections() -> N
         },
     )
     composition = build_storage_composition(settings)
+    await composition.provision()
     await composition.initialize()
     sessions = async_sessionmaker(composition.engines[0], expire_on_commit=False)
     tenant_id = uuid4()

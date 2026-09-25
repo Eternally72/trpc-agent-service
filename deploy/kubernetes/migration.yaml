@@ -29,11 +29,12 @@ spec:
           image: trpc-agent-service:0.1.0
           imagePullPolicy: IfNotPresent
           command:
-            - /app/.venv/bin/alembic
-            - -c
-            - /app/trpc_service/storage/alembic.ini
-            - upgrade
-            - head
+            - /bin/sh
+            - -ec
+          args:
+            - |
+              /app/.venv/bin/alembic -c /app/trpc_service/storage/alembic.ini upgrade head
+              exec /app/.venv/bin/python -m trpc_service.storage.provision
           envFrom:
             - configMapRef:
                 name: trpc-application-config

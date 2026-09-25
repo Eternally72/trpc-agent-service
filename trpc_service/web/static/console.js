@@ -132,9 +132,48 @@
     error.hidden = !text;
   }
 
+  const statusLabels = {
+    active: "已启用", disabled: "已停用", stopped: "已停止", stale: "心跳过期",
+    unknown: "待确认", ready: "已就绪", failed: "失败", error: "异常",
+    pending: "待处理", processing: "处理中", ingesting: "入库中", draining: "排空中",
+    retryable_failed: "等待重试", dead_letter: "需人工处理", delivered: "已送达",
+    cancelled: "已取消", allowed: "已允许", denied: "已拒绝", success: "成功",
+  };
+
+  function statusLabel(value) {
+    return statusLabels[String(value || "unknown").toLowerCase()] || String(value);
+  }
+
   function badge(value) {
     const normalized = String(value || "unknown").toLowerCase();
-    return `<span class="badge ${escapeHTML(normalized)}">${escapeHTML(value)}</span>`;
+    return `<span class="badge ${escapeHTML(normalized)}">${escapeHTML(statusLabel(value))}</span>`;
+  }
+
+  const loadingViews = new Map();
+  function withLoading(view, operation) {
+    if (loadingViews.has(view)) return loadingViews.get(view);
+    const section = document.getElementById(view);
+    let notice = section.querySelector(".view-status");
+    if (!notice) {
+      notice = document.createElement("p"); notice.className = "view-status";
+      notice.setAttribute("role", "status"); section.prepend(notice);
+    }
+    notice.textContent = "正在加载最新数据…"; notice.classList.remove("error"); notice.hidden = false;
+    section.setAttribute("aria-busy", "true");
+    const buttons = $$(`[data-refresh="${view}"]`);
+    const disabled = buttons.map((button) => button.disabled);
+    buttons.forEach((button) => { button.disabled = true; });
+    const pending = Promise.resolve().then(operation).then((result) => {
+      notice.hidden = true; return result;
+    }).catch((error) => {
+      notice.textContent = "数据加载失败，请刷新重试。"; notice.classList.add("error"); throw error;
+    }).finally(() => {
+      section.setAttribute("aria-busy", "false");
+      buttons.forEach((button, index) => { button.disabled = disabled[index]; });
+      loadingViews.delete(view);
+    });
+    loadingViews.set(view, pending);
+    return pending;
   }
 
   function empty(columns, text = "暂无数据") {
@@ -164,6 +203,10 @@
     overview: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
     tenants: '<path d="M3 21V7l9-4v18M12 9h9v12M1 21h22M6 9h3M6 13h3M6 17h3M15 13h3M15 17h3"/>',
     accounts: '<circle cx="12" cy="8" r="4"/><path d="M4 21v-3a8 8 0 0 1 16 0v3"/>',
+    models: '<path d="m12 2 10 6-10 6L2 8l10-6zM2 12l10 6 10-6M2 16l10 6 10-6"/>',
+    credentials: '<circle cx="8" cy="8" r="5"/><path d="m12 12 9 9M17 17l3-3M14 14l3-3"/>',
+    profiles: '<path d="M4 5h16M4 12h16M4 19h16"/><circle cx="8" cy="5" r="2" fill="white"/><circle cx="16" cy="12" r="2" fill="white"/><circle cx="10" cy="19" r="2" fill="white"/>',
+    adapters: '<path d="M8 3v5M16 3v5M6 8h12v3a6 6 0 0 1-12 0V8zM12 17v5"/>',
     agents: '<rect x="4" y="7" width="16" height="14" rx="3"/><path d="M12 3v4M8 12v2M16 12v2M9 17h6M1 12h3M20 12h3"/>',
     channels: '<rect x="3" y="3" width="18" height="14" rx="3"/><path d="m7 17-2 4 7-4M7 8h10M7 12h6"/>',
     knowledge: '<path d="M12 5C8 2 4 3 2 4v15c4-1 7-1 10 2 3-3 6-3 10-2V4c-4-1-7-1-10 1v16"/>',
@@ -229,6 +272,6 @@
 
   window.ConsoleUI = {
     $, $$, escapeHTML, createApi, toast, setLoginError, badge, empty,
-    formatDate, compactNumber, setOptions,
+    formatDate, compactNumber, setOptions, statusLabel, withLoading,
   };
 })();

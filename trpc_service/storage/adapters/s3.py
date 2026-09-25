@@ -33,6 +33,11 @@ class _StreamingBody(Protocol):
 class S3Client(Protocol):
     """Structural client contract that keeps boto3 dynamic types at composition."""
 
+    def close(self) -> None:
+        """Close the client-owned HTTP connection pools."""
+
+        ...
+
     def upload_fileobj(
         self,
         file: BinaryIO,
@@ -126,6 +131,16 @@ class S3ArtifactStore(ArtifactStore):
                 # BucketAlreadyExists remains fatal because it may be foreign.
                 if create_code != "BucketAlreadyOwnedByYou":
                     raise
+
+    async def validate_bucket(self) -> None:
+        """Require an existing accessible bucket without creating infrastructure."""
+
+        await asyncio.to_thread(self._client.head_bucket, Bucket=self._bucket)
+
+    async def close(self) -> None:
+        """Release the synchronous SDK's pooled HTTP connections off the event loop."""
+
+        await asyncio.to_thread(self._client.close)
 
     @staticmethod
     def _artifact_id(context: TenantContext, checksum: str) -> str:

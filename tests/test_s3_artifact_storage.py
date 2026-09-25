@@ -28,6 +28,10 @@ class FakeS3Client:
     def __init__(self) -> None:
         self.objects: dict[tuple[str, str], bytes] = {}
         self.extra_args: list[object] = []
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
 
     def upload_fileobj(self, file: object, bucket: str, key: str, ExtraArgs: object) -> None:
         self.extra_args.append(ExtraArgs)
@@ -75,6 +79,16 @@ class ConcurrentBucketClient(FakeS3Client):
 
 async def _content(payload: bytes) -> AsyncIterator[bytes]:
     yield payload
+
+
+@pytest.mark.anyio
+async def test_s3_validation_does_not_create_missing_buckets_and_close_releases_client() -> None:
+    client = ConcurrentBucketClient()
+    store = S3ArtifactStore(client, bucket="existing")  # type: ignore[arg-type]
+    with pytest.raises(ClientError, match="HeadBucket"):
+        await store.validate_bucket()
+    await store.close()
+    assert client.closed
 
 
 @pytest.mark.anyio

@@ -73,18 +73,31 @@ class PgVectorKnowledgeStore(KnowledgeStore):
             # intentionally reject multi-command SQL batches.
             for statement in statements:
                 await database.execute(text(statement))
+        await self.validate_schema()
+
+    async def validate_schema(self) -> None:
+        """Verify runtime access and dimensions without requiring DDL privileges."""
+
+        async with self._sessions() as database:
             column_type = await database.scalar(
                 text("""
                     SELECT format_type(attribute.atttypid, attribute.atttypmod)
                     FROM pg_attribute AS attribute
-                    WHERE attribute.attrelid = 'knowledge_chunk_vector'::regclass
+                    WHERE attribute.attrelid = to_regclass('knowledge_chunk_vector')
                       AND attribute.attname = 'embedding'
                       AND NOT attribute.attisdropped
                 """))
-            expected_type = f"vector({dimensions})"
+            expected_type = f"vector({self._embeddings.dimensions})"
             if column_type != expected_type:
-                raise EmbeddingDimensionError(f"configured embedding expects {expected_type}, "
-                                              f"existing column is {column_type}")
+                raise EmbeddingDimensionError(
+                    f"configured embedding expects {expected_type}, "
+                    f"existing column is {column_type}; "
+                    "run storage provisioning with the migration identity")
+            await database.execute(
+                text("""
+                SELECT tenant_id, document_id, knowledge_base_id, content, attributes, embedding
+                FROM knowledge_chunk_vector LIMIT 0
+            """))
 
     async def index(
         self,

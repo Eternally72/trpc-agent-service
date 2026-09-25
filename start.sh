@@ -155,6 +155,7 @@ export TRPC_SERVICE_ENVIRONMENT=development
 # another pgvector service, or a future external Vector Store.
 
 uv run alembic -c "$PROJECT_ROOT/trpc_service/storage/alembic.ini" upgrade head
+uv run python -m trpc_service.storage.provision
 readonly LOCAL_WORKER_NODES="$(uv run python -c \
     'from trpc_service.config import Settings; print(Settings().local_worker_nodes)')"
 readonly WORKER_CONCURRENCY_PER_NODE="$(uv run python -c \
