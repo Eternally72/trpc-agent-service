@@ -8,6 +8,8 @@ import argparse
 import asyncio
 from datetime import datetime, timezone
 import json
+import sys
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from time import monotonic
 from uuid import UUID, uuid4
@@ -34,6 +36,50 @@ from trpc_service.tenant.models import Tenant
 def report(**fields: object) -> None:
     """Print only synthetic test replies and safe runtime counters."""
     print(json.dumps(fields, ensure_ascii=False), flush=True)
+
+
+async def wait_for_test_tasks(sessions, tenant_id: UUID, *, timeout: float = 30) -> None:
+    """Wait for final commits, without revoking a live Worker's execution lease."""
+    async with asyncio.timeout(timeout):
+        while True:
+            async with sessions() as database:
+                count = await database.scalar(
+                    select(func.count()).select_from(AgentTaskRow).where(
+                        AgentTaskRow.tenant_id == tenant_id,
+                        AgentTaskRow.status.in_(("queued", "running", "retryable_failed"))))
+            if not count:
+                return
+            await asyncio.sleep(.25)
+
+
+def finish_cleanup(failures: list[tuple[str, Exception]],
+                   primary_error: BaseException | None) -> None:
+    """Preserve the original verdict and make incomplete cleanup explicit."""
+    if not failures:
+        report(cleanup="complete")
+        return
+    labels = [f"{label}: {type(error).__name__}" for label, error in failures]
+    report(cleanup="incomplete",
+           failures=labels,
+           note="Test resources or unfinished tasks may remain; inspect this run's tenant.")
+    if primary_error is not None:
+        primary_error.add_note("Acceptance cleanup incomplete: " + "; ".join(labels))
+    else:
+        raise RuntimeError("Acceptance cleanup incomplete: " + "; ".join(labels))
+
+
+async def cleanup_steps(
+    operations: list[tuple[str, Callable[[], Awaitable[object]]]],
+    primary_error: BaseException | None,
+) -> None:
+    """Try every scoped cleanup step, including drain and final resource close."""
+    failures = []
+    for label, operation in operations:
+        try:
+            await operation()
+        except Exception as error:
+            failures.append((label, error))
+    finish_cleanup(failures, primary_error)
 
 
 async def run_check(args: argparse.Namespace) -> None:
@@ -89,9 +135,15 @@ async def run_check(args: argparse.Namespace) -> None:
                                         "model_catalog_id": str(args.model_catalog_id),
                                         "credential_id": str(args.credential_id),
                                         "parameter_config": {
-                                            "temperature": 0,
-                                            "max_output_tokens": 2048,
-                                            "timeout_seconds": 120
+                                            "temperature":
+                                            0,
+                                            "max_output_tokens":
+                                            2048,
+                                            "timeout_seconds":
+                                            120,
+                                            **({
+                                                "enable_thinking": False
+                                            } if args.disable_thinking else {})
                                         },
                                     }))["model_profile_id"]
             agent_id = UUID((await api("POST",
@@ -248,28 +300,45 @@ async def run_check(args: argparse.Namespace) -> None:
             assert remaining["total"] == 0
             report(test="knowledge-delete", status="passed")
         finally:
-            try:
-                if tenant_id:
-                    # Only this run's synthetic channel/outbox are changed.
+            primary_error = sys.exception()
+            operations: list[tuple[str, Callable[[], Awaitable[object]]]] = []
+
+            if tenant_id:
+
+                async def disable_binding() -> None:
                     async with sessions.begin() as database:
                         await database.execute(
                             update(ChannelBinding).where(
                                 ChannelBinding.tenant_id == tenant_id).values(status="disabled"))
+
+                async def cancel_replies() -> None:
+                    async with sessions.begin() as database:
                         await database.execute(
                             update(OutboxMessageRow).where(
                                 OutboxMessageRow.tenant_id == tenant_id,
                                 OutboxMessageRow.status == "PENDING").values(status="CANCELLED"))
-                    if document_id and agent_id:
-                        await api("DELETE", f"/tenants/{tenant_id}/knowledge-bases/live-check/"
-                                  f"documents/{document_id}",
-                                  params={"agent_app_id": str(agent_id)})
-                    if agent_id:
-                        await api("DELETE", f"/tenants/{tenant_id}/agents/{agent_id}")
-                    if profile_id:
-                        await api("DELETE", f"/tenants/{tenant_id}/model-profiles/{profile_id}")
-                    await api("DELETE", f"/tenants/{tenant_id}")
-            finally:
-                await engine.dispose()
+
+                operations.append(("binding", disable_binding))
+                if document_id and agent_id:
+                    operations.append(
+                        ("document",
+                         lambda: api("DELETE", f"/tenants/{tenant_id}/knowledge-bases/live-check/"
+                                     f"documents/{document_id}",
+                                     params={"agent_app_id": str(agent_id)})))
+                if agent_id:
+                    operations.append(
+                        ("agent", lambda: api("DELETE", f"/tenants/{tenant_id}/agents/{agent_id}")))
+                if profile_id:
+                    operations.append((
+                        "profile",
+                        lambda: api("DELETE", f"/tenants/{tenant_id}/model-profiles/{profile_id}")))
+                operations.append(("tenant", lambda: api("DELETE", f"/tenants/{tenant_id}")))
+                # Polling timeout does not cancel a Worker. Wait until this run's
+                # tasks settle before the final Outbox sweep; report any leftovers.
+                operations.append(("task drain", lambda: wait_for_test_tasks(sessions, tenant_id)))
+                operations.append(("outbox", cancel_replies))
+            operations.append(("database close", engine.dispose))
+            await cleanup_steps(operations, primary_error)
 
 
 if __name__ == "__main__":
@@ -285,4 +354,7 @@ if __name__ == "__main__":
                         default=Path(".secrets/admin_bootstrap_token"))
     parser.add_argument("--model-catalog-id", required=True, type=UUID)
     parser.add_argument("--credential-id", required=True, type=UUID)
+    parser.add_argument("--disable-thinking",
+                        action="store_true",
+                        help="Request fast replies on models supporting enable_thinking")
     asyncio.run(run_check(parser.parse_args()))

@@ -92,7 +92,8 @@ async def test_database_config_provider_applies_and_disables_tenant_model_profil
                     "model_catalog_id": catalog.json()["model_catalog_id"],
                     "credential_id": credential.json()["model_credential_id"],
                     "parameter_config": {
-                        "temperature": 0.4
+                        "temperature": 0.4,
+                        "enable_thinking": False
                     },
                     "limits": {
                         "daily_tokens": 100000
@@ -150,6 +151,7 @@ async def test_database_config_provider_applies_and_disables_tenant_model_profil
             assert loaded.model["model_name"] == "qwen-max"
             assert loaded.model["api_key_ref"] == "env://DASHSCOPE_API_KEY"
             assert loaded.model["temperature"] == 0.4
+            assert loaded.model["enable_thinking"] is False
             assert loaded.model["max_output_tokens"] == 2048
             assert loaded.model["context_window_tokens"] == 32768
             assert loaded.application["instruction"] == "Use tenant runtime config."

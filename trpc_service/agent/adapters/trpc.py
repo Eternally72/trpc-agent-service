@@ -11,13 +11,13 @@ from uuid import uuid4
 from trpc_agent_sdk.abc import SessionServiceABC, ToolABC
 from trpc_agent_sdk.agents import LlmAgent
 from trpc_agent_sdk.events import Event
-from trpc_agent_sdk.models import OpenAIModel
 from trpc_agent_sdk.runners import RunConfig, Runner
 from trpc_agent_sdk.sessions import InMemorySessionService, SessionServiceConfig
 from trpc_agent_sdk.skills import BaseSkillRepository
 from trpc_agent_sdk.tools import FunctionTool
 from trpc_agent_sdk.types import Content, GenerateContentConfig, Part
 
+from trpc_service.agent.adapters.model import PlatformOpenAIModel
 from trpc_service.agent.adapters.trpc_tools import CapabilityCallSequence, TRPCToolBridge
 from trpc_service.agent.contracts import (
     AgentExecutionContext,
@@ -39,6 +39,7 @@ class _SDKRuntime:
 
     runner: Runner
     sessions: SessionServiceABC
+    model: PlatformOpenAIModel | None = None
 
 
 def _resolve_secret(settings: Settings, reference: str) -> str:
@@ -333,11 +334,18 @@ class TRPCAgentRunner:
             raise ValueError("model temperature must be numeric")
         if not isinstance(raw_max_tokens, (str, int, float)):
             raise ValueError("model max_output_tokens must be numeric")
+        thinking = model_config.get("enable_thinking")
+        if thinking is not None and not isinstance(thinking, bool):
+            raise ValueError("enable_thinking must be a boolean")
         generation_config = GenerateContentConfig(
             temperature=float(raw_temperature),
             max_output_tokens=int(raw_max_tokens),
+            http_options=None
+            if thinking is None else {"extra_body": {
+                "enable_thinking": thinking
+            }},
         )
-        model = OpenAIModel(
+        model = PlatformOpenAIModel(
             model_name=model_name,
             api_key=_resolve_secret(self._settings, api_key_ref),
             base_url=base_url,
@@ -381,7 +389,7 @@ class TRPCAgentRunner:
             # Platform Session/Memory/Outbox adapters own post-turn persistence.
             enable_post_turn_processing=False,
         )
-        return _SDKRuntime(runner=runner, sessions=sessions)
+        return _SDKRuntime(runner=runner, sessions=sessions, model=model)
 
     async def run(
         self,
@@ -399,5 +407,9 @@ class TRPCAgentRunner:
                 runtime.sessions,
                 app_name=self._settings.service_name,
             )
+        except RuntimeError:
+            if runtime.model is not None and runtime.model.configuration_error is not None:
+                raise runtime.model.configuration_error from None
+            raise
         finally:
             await _close_sdk_runtime(runtime)

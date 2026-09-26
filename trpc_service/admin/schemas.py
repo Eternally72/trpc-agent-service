@@ -218,6 +218,8 @@ class ModelCatalogCreate(BaseModel):
         """Reject model defaults that would be coerced differently at runtime."""
 
         validated = validate_secret_bearing_config(value)
+        if "enable_thinking" in validated and not isinstance(validated["enable_thinking"], bool):
+            raise ValueError("enable_thinking must be a boolean")
         for field in ("max_output_tokens", "context_window_tokens"):
             configured = validated.get(field)
             if configured is not None and (isinstance(configured, bool)
@@ -327,6 +329,8 @@ class ModelProfileCreate(BaseModel):
         """Prevent flexible profile JSON from bypassing write-only SecretRef."""
 
         validated = validate_secret_bearing_config(value)
+        if "enable_thinking" in validated and not isinstance(validated["enable_thinking"], bool):
+            raise ValueError("enable_thinking must be a boolean")
         if "temperature" in validated:
             temperature = validated["temperature"]
             if (isinstance(temperature, bool) or not isinstance(temperature, (int, float))
@@ -393,6 +397,8 @@ class ModelProfileUpdate(NonNullableUpdateModel):
         if value is None:
             return None
         validated = validate_secret_bearing_config(value)
+        if "enable_thinking" in validated and not isinstance(validated["enable_thinking"], bool):
+            raise ValueError("enable_thinking must be a boolean")
         temperature = validated.get("temperature")
         if temperature is not None and (isinstance(temperature, bool) or
                                         not isinstance(temperature,

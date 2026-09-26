@@ -287,6 +287,8 @@ class DatabaseAgentConfigProvider(AgentConfigProvider):
                     parameters.get("context_window_tokens"),
                     "timeout_seconds":
                     parameters.get("timeout_seconds", self._settings.model_timeout_seconds),
+                    "enable_thinking":
+                    parameters.get("enable_thinking"),
                     "input_cost_per_million":
                     parameters.get("input_cost_per_million", 0),
                     "output_cost_per_million":

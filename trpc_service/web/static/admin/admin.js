@@ -321,6 +321,7 @@ function openProfileEdit(profileId) {
   form.elements.credential_id.value = profile.credential_id || "";
   form.elements.name.value = profile.name;
   form.elements.temperature.value = parameters.temperature ?? 0.2;
+  form.elements.enable_thinking.value = String(parameters.enable_thinking ?? "");
   form.elements.timeout_seconds.value = parameters.timeout_seconds ?? 120;
   form.elements.max_output_tokens.value = parameters.max_output_tokens ?? 4096;
   form.elements.context_window_tokens.value = parameters.context_window_tokens ?? 32768;
@@ -468,6 +469,7 @@ $("#profile-form").addEventListener("submit", async (event) => {
       context_window_tokens: Number(data.get("context_window_tokens")), timeout_seconds: Number(data.get("timeout_seconds")),
     }, limits,
   };
+  if (data.get("enable_thinking") !== "") payload.parameter_config.enable_thinking = data.get("enable_thinking") === "true";
   const editing = form.dataset.mode === "edit";
   const tenantId = editing ? form.dataset.tenantId : data.get("tenant_id");
   const path = editing ? `/tenants/${tenantId}/model-profiles/${data.get("model_profile_id")}` : `/tenants/${tenantId}/model-profiles`;
