@@ -13,7 +13,6 @@ from typing import Any, Protocol, cast
 from urllib.parse import urlsplit
 from uuid import UUID
 
-from mcp.client.session_group import StreamableHttpParameters
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from trpc_agent_sdk.tools.mcp_tool import MCPToolset
@@ -32,7 +31,7 @@ from trpc_service.agent.ports import AgentToolInvoker
 from trpc_service.agent.adapters.trpc_tools import CapabilityCallSequence
 from trpc_service.agent.governance import ToolApprovalRequired
 from trpc_service.mcp.models import MCPConnection
-from trpc_service.mcp.transport import PinnedMCPSessionManager
+from trpc_service.mcp.transport import CredentialSafeMCPParameters, PinnedMCPSessionManager
 from trpc_service.mcp.schemas import MCPToolRisk, normalize_mcp_tool_risk
 
 logger = logging.getLogger(__name__)
@@ -70,6 +69,10 @@ _MAX_MCP_SCHEMA_BYTES = 64 * 1024
 _MAX_MCP_CATALOG_BYTES = 1024 * 1024
 _MAX_MCP_RESULT_BYTES = 256 * 1024
 _RISK_POLICY_VERSION = 1
+_GITHUB_REPOSITORY_SEARCH_GUIDANCE = ("GitHub 仓库搜索默认排除 fork。查找指定用户的仓库时，使用 "
+                                      "user:OWNER REPOSITORY in:name fork:true；若用户明确排除 fork 则尊重其条件，"
+                                      "fork:only 表示只查 fork。空结果不能证明仓库不存在，搜索结果数量也不是该用户的全部仓库数。"
+                                      "已知 owner/repo 且获授权时，可用 get_file_contents 读取 README 核实。")
 
 
 def _public_addresses(host: str) -> tuple[str, ...]:
@@ -139,7 +142,7 @@ def _default_toolset_factory(
     addresses: tuple[str, ...],
 ) -> RemoteMCPToolset:
     timeout = timedelta(seconds=connection.timeout_seconds)
-    params = StreamableHttpParameters(
+    params = CredentialSafeMCPParameters(
         url=connection.endpoint_url,
         headers=dict(headers) or None,
         timeout=timeout,
@@ -179,6 +182,7 @@ class GovernedMCPTool(BaseTool):  # type: ignore[misc]
         sequence: CapabilityCallSequence,
         connection_id: UUID,
         catalog_entry: Mapping[str, object],
+        result_guidance: str | None = None,
     ) -> None:
         name = catalog_entry.get("name")
         description = catalog_entry.get("description", "")
@@ -189,6 +193,7 @@ class GovernedMCPTool(BaseTool):  # type: ignore[misc]
         self._invoker = invoker
         self._sequence = sequence
         self._connection_id = connection_id
+        self._result_guidance = result_guidance
         raw_schema = catalog_entry.get("input_schema", {})
         if not isinstance(raw_schema, Mapping):
             raise ValueError("MCP catalog input schema is invalid")
@@ -231,7 +236,10 @@ class GovernedMCPTool(BaseTool):  # type: ignore[misc]
             }
         except PermissionError:
             return {"result": "MCP 调用未执行：该连接或工具不在当前 Agent 的授权范围内。"}
-        return {"result": result.content or ""}
+        response = {"result": result.content or ""}
+        if self._result_guidance is not None:
+            response["guidance"] = self._result_guidance
+        return response
 
 
 def _canonical_mcp_context(
@@ -519,6 +527,7 @@ class TenantMCPService(AgentToolInvoker):
         tools: list[BaseTool] = []
         for row in rows:
             allowed = requested[row.connection_id]
+            github_host = urlsplit(row.endpoint_url).hostname == "api.githubcopilot.com"
             for entry in row.tool_catalog:
                 entry_name = entry.get("name")
                 # Only a strict read-only classification bypasses approval.
@@ -527,6 +536,13 @@ class TenantMCPService(AgentToolInvoker):
                 if not isinstance(entry_name, str) or entry_name not in allowed:
                     continue
                 safe_entry = {**entry, "risk_level": effective_risk}
+                guidance = None
+                if github_host and entry.get("remote_name") == "search_repositories":
+                    # GitHub excludes forks by default. Keep this provider hint
+                    # in model-visible metadata, without rewriting arguments,
+                    # remote results, the persisted catalog or immutable grants.
+                    guidance = _GITHUB_REPOSITORY_SEARCH_GUIDANCE
+                    safe_entry["description"] = (f"{entry.get('description', '')}\n\n{guidance}")
                 tools.append(
                     GovernedMCPTool(
                         # Agent versions are immutable, so apply the latest
@@ -541,5 +557,6 @@ class TenantMCPService(AgentToolInvoker):
                         sequence=sequence,
                         connection_id=row.connection_id,
                         catalog_entry=safe_entry,
+                        result_guidance=guidance,
                     ))
         return tools

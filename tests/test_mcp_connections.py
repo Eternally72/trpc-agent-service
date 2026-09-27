@@ -836,3 +836,62 @@ async def test_mcp_service_rejects_invalid_network_and_invocation_boundaries(
     non_mapping = replace(context, config=replace(context.config, tools={"grants": ["invalid"]}))
     assert await empty_dns.tools_for(invalid_grants, empty_dns, CapabilityCallSequence()) == []
     assert await empty_dns.tools_for(non_mapping, empty_dns, CapabilityCallSequence()) == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("host,remote_name,has_guidance", [
+    ("api.githubcopilot.com", "search_repositories", True),
+    ("mcp.example.com", "search_repositories", False),
+    ("api.githubcopilot.com.evil.example", "search_repositories", False),
+    ("api.githubcopilot.com", "get_file_contents", False),
+])
+async def test_github_search_guidance_reaches_model_without_changing_grants(
+        api_client, host, remote_name, has_guidance):
+    tenant_id = UUID(await _create_tenant(api_client, "MCP search guidance"))
+    app = api_client._transport.app
+    connection_id = uuid4()
+    name = _exposed_tool_name(connection_id, remote_name)
+    entry = {
+        "name": name,
+        "remote_name": remote_name,
+        "description": "Provider description",
+        "input_schema": {
+            "type": "object",
+            "properties": {}
+        },
+        "risk_level": 0,
+        "risk_policy_version": 1,
+    }
+    async with app.state.session_factory.begin() as db:
+        db.add(
+            MCPConnection(connection_id=connection_id,
+                          tenant_id=tenant_id,
+                          name="GitHub",
+                          endpoint_url=f"https://{host}/mcp/",
+                          tool_catalog=[entry]))
+    context = _execution_context(tenant_id, connection_id, name)
+    service = app.state.container.mcp
+    calls = []
+
+    class SearchInvoker:
+
+        async def invoke(self, context, call):
+            calls.append(call)
+            return AgentToolResult(call.call_id, content='{"total_count":0,"items":[]}')
+
+    visible = await service.tools_for(context, SearchInvoker(), CapabilityCallSequence())
+    assert len(visible) == 1
+    declaration = visible[0]._get_declaration()
+    assert ("fork:true" in declaration.description) is has_guidance
+    assert "Provider description" in declaration.description
+    arguments = {"query": "user:example project fork:false"}
+    result = await visible[0]._run_async_impl(tool_context=None, args=arguments)
+    assert result["result"] == '{"total_count":0,"items":[]}'
+    assert ("fork:true" in result.get("guidance", "")) is has_guidance
+    assert dict(calls[0].arguments) == arguments
+    assert context.config.tools["grants"][0]["risk_level"] == 2
+    async with app.state.session_factory() as db:
+        row = await db.get(MCPConnection, connection_id)
+        assert row.tool_catalog == [entry]
+    ungranted = replace(context, config=replace(context.config, tools={"grants": []}))
+    assert await service.tools_for(ungranted, service, CapabilityCallSequence()) == []

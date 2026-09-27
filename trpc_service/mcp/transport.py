@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 from mcp.client.session_group import StreamableHttpParameters
 from mcp.client.streamable_http import streamable_http_client
+from pydantic import Field
 from trpc_agent_sdk.tools.mcp_tool._mcp_session_manager import MCPSessionManager
 
 
@@ -32,7 +33,9 @@ class PinnedMCPTransport(httpx.AsyncHTTPTransport):
                 request.method,
                 request.url.copy_with(host=address),
                 headers=headers,
-                content=request.stream,
+                # `content=` re-encodes ByteStream as a synchronous iterable;
+                # preserve the original async stream for HTTPX/HTTPCore.
+                stream=request.stream,
                 extensions={
                     **request.extensions, "sni_hostname": self._endpoint.host
                 },
@@ -47,10 +50,17 @@ class PinnedMCPTransport(httpx.AsyncHTTPTransport):
         raise AssertionError("validated addresses cannot be empty")
 
 
+class CredentialSafeMCPParameters(StreamableHttpParameters):
+    """Keep authentication usable while excluding it from SDK error messages."""
+
+    headers: dict[str, str] | None = Field(default=None, repr=False)
+
+
 class PinnedMCPSessionManager(MCPSessionManager):  # type: ignore[misc]
     """Override only the pinned SDK's transport seam; keep its session lifecycle."""
 
     def __init__(self, params: StreamableHttpParameters, addresses: tuple[str, ...]) -> None:
+        params = CredentialSafeMCPParameters(**params.model_dump())
         super().__init__(connection_params=params)
         if not addresses:
             raise ValueError("MCP requires a validated destination address")
