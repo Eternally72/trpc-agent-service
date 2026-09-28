@@ -198,6 +198,24 @@ class PostgreSQLDeliveryTaskQueue:
                 ).limit(1).with_for_update(skip_locked=True, of=OutboxMessageRow))
             if row is None or row.binding_id is None:
                 return None
+            if row.status == "PROCESSING":
+                # The previous process may have delivered the message before
+                # losing its lease or persisting the receipt. A new SQL owner
+                # cannot establish that the provider did not accept it. Keep
+                # the original attempt for reconciliation instead of resending.
+                row.status = "UNKNOWN"
+                row.lease_owner = None
+                row.lease_until = None
+                row.next_attempt_at = None
+                row.last_error_code = "DeliveryLeaseExpired"
+                row.last_error_summary = (
+                    "Delivery lease expired; provider outcome requires reconciliation")
+                attempt = await self._attempt(database, row)
+                if attempt is not None:
+                    attempt.finished_at = now
+                    attempt.result = "UNKNOWN"
+                    attempt.error_summary = row.last_error_summary
+                return None
             binding = await database.scalar(
                 select(ChannelBinding).where(
                     ChannelBinding.tenant_id == row.tenant_id,

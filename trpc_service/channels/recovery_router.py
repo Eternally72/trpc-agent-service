@@ -1,5 +1,6 @@
 """Tenant-scoped delivery failure inspection and manual recovery APIs."""
 
+from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
@@ -12,6 +13,8 @@ from trpc_service.admin.auth import (
     require_tenant_admin,
 )
 from trpc_service.channels.schemas import (
+    DeliveryConfirmationRead,
+    DeliveryConfirmationRequest,
     DeliveryFailureList,
     DeliveryFailureRead,
     DeliveryFailureStatus,
@@ -19,7 +22,7 @@ from trpc_service.channels.schemas import (
     DeliveryReplayRequest,
 )
 from trpc_service.storage.database import get_session
-from trpc_service.storage.runtime_orm import OutboxMessageRow
+from trpc_service.storage.runtime_orm import InboxMessageRow, OutboxMessageRow
 
 router = APIRouter(
     prefix="/tenants/{tenant_id}/delivery-failures",
@@ -108,3 +111,60 @@ async def replay_delivery_failure(
     )
     await session.commit()
     return DeliveryReplayRead(outbox_id=outbox_id, status="PENDING")
+
+
+@router.post("/{outbox_id}/confirm-delivered", response_model=DeliveryConfirmationRead)
+async def confirm_delivery_failure(
+        tenant_id: UUID,
+        outbox_id: str,
+        payload: DeliveryConfirmationRequest,
+        actor: ManagementActor = Depends(require_tenant_admin),
+        support_reason: str | None = Header(default=None, alias="X-Support-Reason"),
+        session: AsyncSession = Depends(get_session),
+) -> DeliveryConfirmationRead:
+    """Resolve an UNKNOWN reply without sending it again or rewriting its attempt."""
+
+    row = await session.scalar(
+        select(OutboxMessageRow).where(
+            OutboxMessageRow.tenant_id == tenant_id,
+            OutboxMessageRow.outbox_id == outbox_id,
+            OutboxMessageRow.category == "IM_REPLY",
+            OutboxMessageRow.status == "UNKNOWN",
+        ).with_for_update())
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="unresolved delivery not found")
+    row.status = "DELIVERED"
+    row.delivered_at = datetime.now(timezone.utc)
+    row.external_receipt_id = payload.external_receipt_id
+    row.lease_owner = None
+    row.lease_until = None
+    row.next_attempt_at = None
+    row.last_error_code = None
+    row.last_error_summary = None
+    inbox = await session.scalar(
+        select(InboxMessageRow).where(
+            InboxMessageRow.tenant_id == tenant_id,
+            InboxMessageRow.agent_app_id == row.agent_app_id,
+            InboxMessageRow.reply_outbox_id == outbox_id,
+        ).with_for_update())
+    if inbox is not None:
+        inbox.status = "REPLIED"
+    # The failed provider attempt remains UNKNOWN. The separate operator audit
+    # records who established delivery and why, without inventing a provider ACK.
+    append_management_audit(
+        session,
+        actor,
+        action="delivery_failure.confirm_delivered",
+        resource_type="outbox_message",
+        resource_id=outbox_id,
+        tenant_id=tenant_id,
+        reason=support_reason if actor.is_platform_admin else payload.reason,
+        details_redacted={
+            "from_status": "UNKNOWN",
+            "to_status": "DELIVERED",
+            "confirmation_reason": payload.reason,
+        },
+    )
+    await session.commit()
+    return DeliveryConfirmationRead(outbox_id=outbox_id, status="DELIVERED")

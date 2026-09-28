@@ -185,3 +185,17 @@ class DeliveryReplayRequest(BaseModel):
 class DeliveryReplayRead(BaseModel):
     outbox_id: str
     status: Literal["PENDING"]
+
+
+class DeliveryConfirmationRequest(BaseModel):
+    """Operator evidence for a reply already accepted by the IM provider."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    reason: str = Field(min_length=12, max_length=500)
+    external_receipt_id: str | None = Field(default=None, min_length=1, max_length=255)
+
+
+class DeliveryConfirmationRead(BaseModel):
+    outbox_id: str
+    status: Literal["DELIVERED"]

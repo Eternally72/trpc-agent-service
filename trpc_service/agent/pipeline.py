@@ -2,6 +2,8 @@
 
 import asyncio
 from dataclasses import replace
+import hashlib
+import json
 import logging
 
 from trpc_service.agent.contracts import (
@@ -154,7 +156,7 @@ class AgentExecutionPipeline:
                 if self._workspace_provider is not None:
                     workspace = await self._workspace_provider.acquire(
                         request.tenant,
-                        request.tenant.request_id,
+                        self._workspace_id(request, claim),
                     )
                     context = replace(context, workspace=workspace)
                 try:
@@ -185,6 +187,25 @@ class AgentExecutionPipeline:
                         "Usage reservation release failed error_type=%s",
                         type(release_error).__name__,
                     )
+
+    @staticmethod
+    def _workspace_id(request: AgentExecutionRequest, claim: AgentExecutionClaim) -> str:
+        """Separate fenced attempts even when WorkNodes share a filesystem.
+
+        A stopped process retains its OS file locks after its SQL lease expires.
+        Never steal that directory: the old process may resume writing into it.
+        Durable recovery facts live in storage; local files belong to one fence.
+        Unfenced coordinators retain the existing request-scoped contract.
+        """
+
+        if claim.fencing_token is None:
+            return request.tenant.request_id
+        identity = json.dumps([
+            request.session_id,
+            request.tenant.request_id,
+            claim.fencing_token,
+        ])
+        return "execution-" + hashlib.sha256(identity.encode()).hexdigest()
 
     async def _release_workspace(self, handle: WorkspaceHandle) -> None:
         """Release runtime resources without retrying completed model or Tool work."""

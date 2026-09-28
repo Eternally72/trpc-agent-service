@@ -301,8 +301,14 @@ async function deleteKnowledge(button) {
 
 async function loadFailures() {
   const data = await api.page(`/tenants/${tenantId()}/delivery-failures`, "failure-rows", loadFailures);
-  $("#failure-rows").innerHTML = data.items.map((item) => `<tr><td>${formatDate(item.updated_at)}</td><td class="mono">${escapeHTML(item.binding_id || "—")}</td><td><span class="row-title">${escapeHTML(item.last_error_code || "未分类")}</span><span class="row-subtitle">${escapeHTML(item.last_error_summary || "没有安全摘要")}</span></td><td>${badge(item.status)}</td><td>${["DEAD_LETTER", "UNKNOWN"].includes(item.status) ? `<button class="button secondary small failure-replay" data-id="${escapeHTML(item.outbox_id)}">重新投递</button>` : "等待自动重试"}</td></tr>`).join("") || empty(5);
+  $("#failure-rows").innerHTML = data.items.map((item) => `<tr><td>${formatDate(item.updated_at)}</td><td class="mono">${escapeHTML(item.binding_id || "—")}</td><td><span class="row-title">${escapeHTML(item.last_error_code || "未分类")}</span><span class="row-subtitle">${escapeHTML(item.last_error_summary || "没有安全摘要")}</span></td><td>${badge(item.status)}</td><td>${item.status === "UNKNOWN" ? `<button class="button secondary small failure-confirm" data-id="${escapeHTML(item.outbox_id)}">确认已送达</button> ` : ""}${["DEAD_LETTER", "UNKNOWN"].includes(item.status) ? `<button class="button secondary small failure-replay" data-id="${escapeHTML(item.outbox_id)}">重新投递</button>` : "等待自动重试"}</td></tr>`).join("") || empty(5);
   $$(".failure-replay").forEach((button) => button.addEventListener("click", () => replayFailure(button)));
+  $$(".failure-confirm").forEach((button) => button.addEventListener("click", () => {
+    const form = $("#confirm-delivery-form");
+    form.reset();
+    form.elements.outbox_id.value = button.dataset.id;
+    $("#confirm-delivery-dialog").showModal();
+  }));
   return data;
 }
 
@@ -502,6 +508,15 @@ $("#replay-form").addEventListener("submit", async (event) => {
   event.preventDefault(); const form = event.currentTarget; const data = new FormData(form);
   const outboxId = encodeURIComponent(String(data.get("outbox_id") || ""));
   await mutate({ button: $("button[type='submit']", form), request: () => api(`/tenants/${tenantId()}/delivery-failures/${outboxId}/replay`, { method: "POST", body: JSON.stringify({ reason: data.get("reason") }) }), success: "投递任务已重新入队", refreshView: "failures", dialog: form.closest("dialog"), form });
+});
+
+$("#confirm-delivery-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const data = new FormData(form);
+  const outboxId = encodeURIComponent(String(data.get("outbox_id")));
+  const payload = { reason: String(data.get("reason")).trim(), external_receipt_id: String(data.get("external_receipt_id")).trim() || null };
+  await mutate({ button: $("button[type='submit']", form), request: () => api(`/tenants/${tenantId()}/delivery-failures/${outboxId}/confirm-delivered`, { method: "POST", body: JSON.stringify(payload) }), success: "已确认送达，后续消息可继续投递", refreshView: "failures", dialog: form.closest("dialog"), form });
 });
 
 (async () => {
