@@ -134,7 +134,7 @@
 
   const statusLabels = {
     active: "已启用", disabled: "已停用", stopped: "已停止", stale: "心跳过期",
-    unknown: "待确认", ready: "已就绪", failed: "失败", error: "异常",
+    deleted: "已移出检索", superseded: "旧版本", unknown: "待确认", ready: "已就绪", failed: "失败", error: "异常",
     pending: "待处理", processing: "处理中", ingesting: "入库中", draining: "排空中",
     retryable_failed: "等待重试", dead_letter: "需人工处理", delivered: "已送达",
     cancelled: "已取消", allowed: "已允许", denied: "已拒绝", success: "成功",
@@ -244,6 +244,7 @@
     let controls;
     let search;
     let pager;
+    let statusFilter;
     const render = () => {
       if (surface.querySelector(".pagination:not(.local-pagination)")) return;
       const rows = [...body.rows];
@@ -253,12 +254,25 @@
         search = document.createElement("input"); search.type = "search";
         search.placeholder = "搜索当前列表…"; search.setAttribute("aria-label", "搜索当前列表");
         controls.append(search); surface.prepend(controls);
+        if (["tenant-rows", "account-rows", "model-rows", "credential-rows", "profile-rows", "agent-rows", "binding-rows", "mcp-rows", "knowledge-rows"].includes(body.id)) {
+          statusFilter = document.createElement("select"); statusFilter.setAttribute("aria-label", "筛选状态");
+          statusFilter.innerHTML = '<option value="active">已启用</option><option value="disabled">已停用</option><option value="all">全部</option>';
+          statusFilter.addEventListener("change", () => { page = 0; render(); }); controls.prepend(statusFilter);
+        }
         pager = document.createElement("nav"); pager.className = "pagination local-pagination";
         pager.setAttribute("aria-label", "列表翻页"); surface.append(pager);
         search.addEventListener("input", () => { page = 0; render(); });
       }
       const query = search.value.trim().toLocaleLowerCase();
-      const matches = rows.filter((row) => !row.querySelector(".empty") && row.textContent.toLocaleLowerCase().includes(query));
+      const normalized = (row) => ["active", "ready"].includes((row.dataset.status || "").toLowerCase()) ? "active" : "disabled";
+      if (statusFilter) {
+        const actual = rows.filter((row) => !row.querySelector(".empty"));
+        for (const option of statusFilter.options) {
+          const count = actual.filter((row) => option.value === "all" || normalized(row) === option.value).length;
+          option.textContent = `${{ active: "已启用", disabled: "已停用", all: "全部" }[option.value]} (${count})`;
+        }
+      }
+      const matches = rows.filter((row) => !row.querySelector(".empty") && row.textContent.toLocaleLowerCase().includes(query) && (!statusFilter || statusFilter.value === "all" || normalized(row) === statusFilter.value));
       page = Math.min(page, Math.max(0, Math.ceil(matches.length / 25) - 1));
       const visible = new Set(matches.slice(page * 25, (page + 1) * 25));
       rows.forEach((row) => { row.hidden = row.querySelector(".empty") ? matches.length > 0 : !visible.has(row); });
@@ -276,8 +290,78 @@
     render();
   });
 
+  function purgeButton(path, view) {
+    return `<button type="button" class="button danger small purge-action" data-purge-path="${escapeHTML(path)}" data-purge-view="${escapeHTML(view)}">彻底删除</button>`;
+  }
+
+  function installDeletionActions(api, { historyPath, onDeleted }) {
+    const dialog = document.createElement("dialog");
+    dialog.className = "deletion-dialog";
+    dialog.setAttribute("aria-labelledby", "deletion-title");
+    document.body.append(dialog);
+    let busy = false;
+    dialog.addEventListener("cancel", (event) => { if (busy) event.preventDefault(); });
+    const close = () => { if (!busy) dialog.close(); };
+    function shell(title, description) {
+      dialog.innerHTML = `<div class="dialog-head"><div><h2 id="deletion-title">${escapeHTML(title)}</h2><p>${escapeHTML(description)}</p></div><button class="dialog-close" type="button" aria-label="关闭">×</button></div><div class="deletion-body"><p role="status">正在读取…</p></div>`;
+      dialog.querySelector(".dialog-close").addEventListener("click", close);
+      if (!dialog.open) dialog.showModal();
+      return dialog.querySelector(".deletion-body");
+    }
+    async function history() {
+      const body = shell("删除记录", "配置删除后，文件和缓存的清理结果会保存在这里。最多显示 100 条，优先显示未完成的清理。");
+      try {
+        const data = await api(historyPath());
+        body.innerHTML = data.items.map((item) => `<article class="deletion-receipt"><div><strong>${escapeHTML(item.name)}</strong><span class="row-subtitle">${formatDate(item.created_at)}</span></div><span class="badge ${item.status === "completed" ? "active" : "warning"}">${item.status === "completed" ? "已彻底删除" : "清理未完成"}</span>${item.status === "completed" ? "" : `<button type="button" class="button secondary small" data-retry="${escapeHTML(item.deletion_id)}">重试清理</button>`}</article>`).join("") || '<p class="deletion-empty">暂无删除记录。</p>';
+        body.querySelectorAll("[data-retry]").forEach((button) => button.addEventListener("click", async () => {
+          busy = true; button.disabled = true; button.textContent = "正在清理…";
+          try {
+            const result = await api(`${historyPath()}/${button.dataset.retry}/retry`, { method: "POST" });
+            toast(result.status === "completed" ? "清理完成" : "清理仍未完成，请检查存储连接后重试", result.status === "completed" ? "success" : "error");
+          } catch (error) { toast(error.message, "error"); }
+          finally { busy = false; await history(); }
+        }));
+      } catch (error) { body.textContent = error.message; }
+    }
+    const entry = document.createElement("button");
+    entry.className = "button secondary small"; entry.type = "button"; entry.textContent = "删除记录";
+    entry.addEventListener("click", history);
+    document.querySelector(".top-actions")?.prepend(entry);
+    document.body.addEventListener("click", async (event) => {
+      const trigger = event.target.closest("[data-purge-path]");
+      if (!trigger || busy) return;
+      const path = trigger.dataset.purgePath;
+      const body = shell("彻底删除", "删除后无法恢复。请核对影响范围，停用配置仍可通过启用恢复。");
+      try {
+        const preview = await api(`${path}/deletion-preview`);
+        if (!dialog.open || !body.isConnected) return;
+        body.innerHTML = `<div class="deletion-target"><span>删除对象</span><strong>${escapeHTML(preview.name)}</strong></div><div class="deletion-counts">${preview.affected.map((item) => `<div><strong>${item.count}</strong><span>${escapeHTML(item.label)}</span></div>`).join("")}</div>${preview.blockers.length ? `<div class="deletion-blockers" role="alert"><strong>暂时无法删除</strong><ul>${preview.blockers.map((text) => `<li>${escapeHTML(text)}</li>`).join("")}</ul></div>` : ""}<p class="deletion-note">保留：${preview.retained.map(escapeHTML).join("；")}。</p><p class="deletion-note">${(preview.notes || []).map(escapeHTML).join(" ")}</p><form class="deletion-form"><label class="field">输入完整名称以确认<input name="confirmation" autocomplete="off" placeholder="${escapeHTML(preview.name)}" required ${preview.can_delete ? "" : "disabled"}></label><p class="form-error" role="alert" hidden></p><div class="dialog-actions"><button type="button" class="button secondary deletion-cancel">取消</button><button type="submit" class="button danger-solid" disabled>确认彻底删除</button></div></form>`;
+        const form = body.querySelector("form");
+        const input = form.elements.confirmation;
+        const submit = form.querySelector("[type=submit]");
+        const errorBox = form.querySelector(".form-error");
+        body.querySelector(".deletion-cancel").addEventListener("click", close);
+        input.addEventListener("input", () => { submit.disabled = !preview.can_delete || input.value !== preview.name; });
+        if (preview.can_delete) input.focus();
+        form.addEventListener("submit", async (event) => {
+          event.preventDefault(); if (busy || input.value !== preview.name || !preview.can_delete) return;
+          busy = true; submit.disabled = true; submit.textContent = "正在删除…"; errorBox.hidden = true;
+          try {
+            const result = await api(`${path}/purge`, { method: "DELETE", body: JSON.stringify({ confirmation: input.value }) });
+            busy = false; dialog.close();
+            toast(result.status === "completed" ? "已彻底删除" : "配置已删除，文件清理未完成，请在删除记录中重试", result.status === "completed" ? "success" : "error");
+            await onDeleted(trigger.dataset.purgeView);
+            if (result.status !== "completed") await history();
+          } catch (error) {
+            errorBox.textContent = error.message; errorBox.hidden = false;
+          } finally { busy = false; submit.disabled = false; submit.textContent = "确认彻底删除"; }
+        });
+      } catch (error) { body.textContent = error.message; }
+    });
+  }
+
   window.ConsoleUI = {
     $, $$, escapeHTML, createApi, toast, setLoginError, badge, empty,
-    formatDate, compactNumber, setOptions, statusLabel, withLoading,
+    formatDate, compactNumber, setOptions, statusLabel, withLoading, purgeButton, installDeletionActions,
   };
 })();

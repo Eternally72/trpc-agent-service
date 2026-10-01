@@ -1,6 +1,6 @@
 # Worker Pool 使用期望状态扩缩容
 
-状态：已采纳并实现。
+状态：已采纳并实现。2026-09-29 按当前本地 Supervisor 和 Kubernetes Scaler 核对。
 
 ## 决策
 
@@ -14,3 +14,11 @@
 - 本地与 Kubernetes 使用同一种控制面语义。
 - 手工 `kubectl scale` 或 HPA 不能与当前期望状态协调器长期同时控制副本数；接入 HPA 时必须明确移交控制权。
 - 管理员不能强杀指定节点；故障节点由心跳过期、租约接管和运维流程处理。
+
+## 节点与执行槽
+
+期望数量控制 Worker 进程或 Kubernetes 副本，不是并发线程数。每个 Worker 通过多个异步 slot 处理不同会话；同一会话仍按 FIFO 执行。当前本地默认每进程 1 个 slot，Kubernetes Worker 清单也显式设置为 1。
+
+扩容不实现租户公平调度。2026-09-28 的竞争测试表明增加 slot 可缓解短任务排队，但持续过载仍然影响其他租户。后续引入租户配额或公平调度需要另行设计，不能把节点扩容当作资源隔离。
+
+实现：[扩缩容协调](../../trpc_service/agent/scaling.py)、[Worker](../../trpc_service/agent/worker.py)。数据：[测试结果](../测试结果.md)。

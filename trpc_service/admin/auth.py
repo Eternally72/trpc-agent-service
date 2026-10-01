@@ -18,6 +18,7 @@ from cryptography.hazmat.primitives.kdf.argon2 import Argon2id
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from trpc_service.admin.deletion_guard import require_cleanup_complete
 from trpc_service.admin.models import (
     ManagementAuditLog,
     ManagementCredential,
@@ -253,7 +254,14 @@ async def require_platform_tenant_access(
             },
         ))
     await session.commit()
+    await _check_cleanup_barrier(request, session, tenant_id)
     return actor
+
+
+async def _check_cleanup_barrier(request: Request, session: AsyncSession, tenant_id: UUID) -> None:
+    path = request.url.path
+    if request.method not in {"GET", "HEAD", "OPTIONS"} and not path.endswith(("/purge", "/retry")):
+        await require_cleanup_complete(session, tenant_id)
 
 
 def _tenant_role_dependency(
@@ -290,6 +298,7 @@ def _tenant_role_dependency(
                     },
                 ))
             await session.commit()
+            await _check_cleanup_barrier(request, session, tenant_id)
             return actor
         tenant = await session.get(Tenant, tenant_id)
         if tenant is None or tenant.status != "active":
@@ -298,6 +307,7 @@ def _tenant_role_dependency(
         if not (actor.tenant_roles.get(tenant_id, frozenset()) & allowed_roles):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
                                 detail="tenant role does not permit this operation")
+        await _check_cleanup_barrier(request, session, tenant_id)
         if request.method == "GET":
             session.add(
                 ManagementAuditLog(

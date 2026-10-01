@@ -8,7 +8,7 @@ const titles = {
 };
 const {
   $, $$, escapeHTML, createApi, toast, setLoginError, badge, empty,
-  formatDate, setOptions, statusLabel, withLoading,
+  formatDate, setOptions, statusLabel, withLoading, purgeButton, installDeletionActions,
 } = window.ConsoleUI;
 const api = createApi(state);
 
@@ -68,11 +68,11 @@ async function loadAgents() {
     const runtimeStatus = item.model_profile_id
       ? badge(item.status)
       : '<span class="badge warning">待系统管理员配置模型</span>';
-    return `<tr><td><span class="row-title">${escapeHTML(item.name)}</span><span class="row-subtitle mono">${escapeHTML(item.agent_app_id)}</span></td><td>${runtimeStatus}</td><td>${escapeHTML(bases.join("、") || "未配置")}</td><td>v${item.stable_config_version}</td><td><div class="actions"><button class="button secondary small agent-edit" data-id="${item.agent_app_id}">编辑</button><button class="button ${item.status === "active" ? "danger" : "secondary"} small agent-toggle" data-id="${item.agent_app_id}" data-status="${item.status}">${item.status === "active" ? "停用" : "启用"}</button></div></td></tr>`;
+    return `<tr data-status="${escapeHTML(item.status)}"><td><span class="row-title">${escapeHTML(item.name)}</span><span class="row-subtitle mono">${escapeHTML(item.agent_app_id)}</span></td><td>${runtimeStatus}</td><td>${escapeHTML(bases.join("、") || "未配置")}</td><td>v${item.stable_config_version}</td><td><div class="actions"><button class="button secondary small agent-edit" data-id="${item.agent_app_id}">编辑</button><button class="button ${item.status === "active" ? "danger" : "secondary"} small agent-toggle" data-id="${item.agent_app_id}" data-status="${item.status}">${item.status === "active" ? "停用" : "启用"}</button>${purgeButton(`/tenants/${tenantId()}/resources/agents/${item.agent_app_id}`, "agents")}</div></td></tr>`;
   }).join("") || empty(5);
   $$(".agent-edit").forEach((button) => button.addEventListener("click", () => editAgent(button.dataset.id)));
   $$(".agent-toggle").forEach((button) => button.addEventListener("click", () => toggleAgent(button)));
-  setOptions("#knowledge-agent", data.items.filter((item) => item.status === "active" && item.model_profile_id), "agent_app_id", (item) => item.name);
+  setOptions("#knowledge-agent", data.items.filter((item) => item.status === "active"), "agent_app_id", (item) => item.name);
   loadKnowledgeBases();
   return data;
 }
@@ -159,7 +159,7 @@ async function loadChannels() {
     return `<article class="adapter-card"><div class="adapter-card-head"><div><h3>${escapeHTML(adapter.display_name)}</h3><p>${escapeHTML(adapter.channel_type)} · ${escapeHTML(adapter.adapter_version)}</p></div><span class="adapter-mark">${escapeHTML(adapter.display_name.slice(0, 1))}</span></div><form class="channel-form" data-channel="${escapeHTML(adapter.channel_type)}" data-binding="${escapeHTML(current?.binding_id || "")}"><label class="field">绑定 Agent<select name="agent_app_id" required>${agentOptions}</select></label>${schemaInputs(adapter.config_schema, "config", current?.account_config || {})}${schemaInputs(adapter.secret_schema, "secret", {}, current?.secret_fields || [])}<button class="button" type="submit">${current ? "更新接入配置" : "启用接入"}</button></form></article>`;
   }).join("") || "<p class=\"inline-notice\">平台尚未启用可用的 IM 适配器。</p>";
   $$(".channel-form").forEach((form) => form.addEventListener("submit", saveChannel));
-  $("#binding-rows").innerHTML = bindings.items.map((item) => `<tr><td><span class="row-title">${escapeHTML(item.channel_type)}</span><span class="row-subtitle mono">${escapeHTML(item.binding_public_id)}</span></td><td>${escapeHTML(agentName(item.agent_app_id))}</td><td class="mono">${escapeHTML(JSON.stringify(item.account_config))}</td><td>${escapeHTML(item.secret_fields.join("、") || "—")}</td><td>${badge(item.status)}</td><td><button class="button danger small binding-disable" data-id="${item.binding_id}">停用</button></td></tr>`).join("") || empty(6);
+  $("#binding-rows").innerHTML = bindings.items.map((item) => `<tr data-status="${escapeHTML(item.status)}"><td><span class="row-title">${escapeHTML(item.channel_type)}</span><span class="row-subtitle mono">${escapeHTML(item.binding_public_id)}</span></td><td>${escapeHTML(agentName(item.agent_app_id))}</td><td class="mono">${escapeHTML(JSON.stringify(item.account_config))}</td><td>${escapeHTML(item.secret_fields.join("、") || "—")}</td><td>${badge(item.status)}</td><td><div class="actions"><button class="button secondary small binding-disable" data-id="${item.binding_id}" data-status="${item.status}">${item.status === "active" ? "停用" : "启用"}</button>${purgeButton(`/tenants/${tenantId()}/resources/channel-bindings/${item.binding_id}`, "channels")}</div></td></tr>`).join("") || empty(6);
   $$(".binding-disable").forEach((button) => button.addEventListener("click", () => disableBinding(button)));
   return bindings;
 }
@@ -191,8 +191,8 @@ async function saveChannel(event) {
 }
 
 async function disableBinding(button) {
-  if (!confirm("确认停用该 IM 接入？")) return;
-  await mutate({ button, request: () => api(`/tenants/${tenantId()}/channel-bindings/${button.dataset.id}`, { method: "DELETE" }), success: "IM 接入已停用", refreshView: "channels" });
+  const next = button.dataset.status === "active" ? "disabled" : "active";
+  await mutate({ button, request: () => api(`/tenants/${tenantId()}/channel-bindings/${button.dataset.id}`, { method: "PATCH", body: JSON.stringify({ status: next }) }), success: next === "active" ? "IM 接入已启用" : "IM 接入已停用", refreshView: "channels" });
 }
 
 async function loadMcpConnections() {
@@ -207,7 +207,7 @@ async function loadMcpConnections() {
       ? `已授权：${authorizedAgents.join("、")}` : "尚未授权给 Agent";
     const credential = item.auth_type === "none"
       ? "无需认证" : (item.credential_configured ? "Bearer · 已配置" : "Bearer · 未配置");
-    return `<tr><td><span class="row-title">${escapeHTML(item.name)}</span><span class="row-subtitle mono">${escapeHTML(item.connection_id)}</span></td><td class="mono">${escapeHTML(item.endpoint_url)}</td><td>${escapeHTML(credential)}</td><td><span class="row-title">${tools.length} 个</span><span class="row-subtitle">${escapeHTML(tools.join("、") || (item.last_error_code ? `刷新失败：${item.last_error_code}` : "尚未刷新"))}</span><span class="row-subtitle">${escapeHTML(authorization)}</span></td><td>${badge(item.status)}</td><td><div class="actions"><button class="button secondary small mcp-edit" data-id="${item.connection_id}">编辑</button><button class="button secondary small mcp-refresh" data-id="${item.connection_id}">测试并刷新</button><button class="button secondary small mcp-grant" data-id="${item.connection_id}">配置 Agent</button><button class="button danger small mcp-disable" data-id="${item.connection_id}">停用</button></div></td></tr>`;
+    return `<tr data-status="${escapeHTML(item.status)}"><td><span class="row-title">${escapeHTML(item.name)}</span><span class="row-subtitle mono">${escapeHTML(item.connection_id)}</span></td><td class="mono">${escapeHTML(item.endpoint_url)}</td><td>${escapeHTML(credential)}</td><td><span class="row-title">${tools.length} 个</span><span class="row-subtitle">${escapeHTML(tools.join("、") || (item.last_error_code ? `刷新失败：${item.last_error_code}` : "尚未刷新"))}</span><span class="row-subtitle">${escapeHTML(authorization)}</span></td><td>${badge(item.status)}</td><td><div class="actions"><button class="button secondary small mcp-edit" data-id="${item.connection_id}">编辑</button><button class="button secondary small mcp-refresh" data-id="${item.connection_id}">测试并刷新</button><button class="button secondary small mcp-grant" data-id="${item.connection_id}">配置 Agent</button><button class="button secondary small mcp-disable" data-id="${item.connection_id}" data-status="${item.status}">${item.status === "active" ? "停用" : "启用"}</button>${purgeButton(`/tenants/${tenantId()}/resources/mcp-connections/${item.connection_id}`, "mcp")}</div></td></tr>`;
   }).join("") || empty(6);
   $$(".mcp-edit").forEach((button) => button.addEventListener("click", () => editMcp(button.dataset.id)));
   $$(".mcp-refresh").forEach((button) => button.addEventListener("click", () => refreshMcp(button)));
@@ -255,13 +255,9 @@ async function refreshMcp(button) {
 }
 
 async function disableMcp(button) {
-  if (!confirm("确认停用该 MCP 连接？关联工具将不再提供给 Agent。")) return;
-  await mutate({
-    button,
-    request: () => api(`/tenants/${tenantId()}/mcp-connections/${button.dataset.id}`, { method: "DELETE" }),
-    success: "MCP 连接已停用",
-    refreshView: "mcp",
-  });
+  const next = button.dataset.status === "active" ? "disabled" : "active";
+  await mutate({ button, request: () => api(`/tenants/${tenantId()}/mcp-connections/${button.dataset.id}`, { method: "PATCH", body: JSON.stringify({ status: next }) }), success: next === "active" ? "MCP 连接已启用" : "MCP 连接已停用", refreshView: "mcp" });
+  state.capabilitiesLoaded = false;
 }
 
 function loadKnowledgeBases() {
@@ -277,10 +273,12 @@ async function loadKnowledge() {
   const agentId = $("#knowledge-agent").value;
   const base = $("#knowledge-base").value;
   if (!agentId || !base) { $("#knowledge-rows").innerHTML = empty(5, "请先为 Agent 配置知识库名称"); return { items: [], total: 0 }; }
-  const data = await api(`/tenants/${tenantId()}/knowledge-bases/${encodeURIComponent(base)}/documents?agent_app_id=${agentId}`);
-  $("#knowledge-rows").innerHTML = data.items.map((item) => `<tr><td><span class="row-title">${escapeHTML(item.filename)}</span><span class="row-subtitle mono">${escapeHTML(item.document_id)}</span></td><td>v${item.version}</td><td>${item.chunk_count}</td><td>${badge(item.status)}</td><td><div class="actions"><button class="button secondary small knowledge-replace" data-id="${item.document_id}">替换</button><button class="button danger small knowledge-delete" data-id="${item.document_id}">删除</button></div></td></tr>`).join("") || empty(5);
+  const data = await api(`/tenants/${tenantId()}/knowledge-bases/${encodeURIComponent(base)}/documents?agent_app_id=${agentId}&include_inactive=true`);
+  $("#knowledge-rows").innerHTML = data.items.map((item) => `<tr data-status="${escapeHTML(item.status)}"><td><span class="row-title">${escapeHTML(item.filename)}</span><span class="row-subtitle mono">${escapeHTML(item.document_id)}</span></td><td>v${item.version}</td><td>${item.chunk_count}</td><td>${badge(item.status)}</td><td><div class="actions"><button class="button secondary small knowledge-replace" data-id="${item.document_id}" ${item.status === "READY" ? "" : "disabled"}>替换</button>${["READY", "DISABLED"].includes(item.status) ? `<button class="button secondary small knowledge-toggle" data-id="${item.document_id}" data-status="${item.status}">${item.status === "READY" ? "停用" : "启用"}</button>` : ""}${purgeButton(`/tenants/${tenantId()}/resources/documents/${item.document_id}`, "knowledge")}</div></td></tr>`).join("") || empty(5);
   $$(".knowledge-replace").forEach((button) => button.addEventListener("click", () => openKnowledgeDialog(button.dataset.id)));
-  $$(".knowledge-delete").forEach((button) => button.addEventListener("click", () => deleteKnowledge(button)));
+  $$(".knowledge-toggle").forEach((button) => button.addEventListener("click", () => mutate({ button,
+    request: () => api(`/tenants/${tenantId()}/knowledge-bases/${encodeURIComponent(base)}/documents/${button.dataset.id}?agent_app_id=${agentId}`, { method: "PATCH", body: JSON.stringify({ status: button.dataset.status === "READY" ? "DISABLED" : "READY" }) }),
+    success: "知识文档状态已更新", refreshView: "knowledge" })));
   return data;
 }
 
@@ -292,12 +290,7 @@ function openKnowledgeDialog(documentId = "") {
   $("#knowledge-dialog").showModal();
 }
 
-async function deleteKnowledge(button) {
-  if (!confirm("确认删除该知识文档？旧版本将保留审计记录，但不会继续参与检索。")) return;
-  const agentId = $("#knowledge-agent").value;
-  const base = $("#knowledge-base").value;
-  await mutate({ button, request: () => api(`/tenants/${tenantId()}/knowledge-bases/${encodeURIComponent(base)}/documents/${button.dataset.id}?agent_app_id=${agentId}`, { method: "DELETE" }), success: "知识文档已删除", refreshView: "knowledge" });
-}
+
 
 async function loadFailures() {
   const data = await api.page(`/tenants/${tenantId()}/delivery-failures`, "failure-rows", loadFailures);
@@ -523,3 +516,12 @@ $("#confirm-delivery-form").addEventListener("submit", async (event) => {
   try { await enterConsole(); }
   catch (error) { if (error.status !== 401) setLoginError(error.message); }
 })();
+
+installDeletionActions(api, {
+  historyPath: () => `/tenants/${tenantId()}/deletions`,
+  onDeleted: async (view) => {
+    state.capabilitiesLoaded = false;
+    await loadAgents();
+    await refresh(view);
+  },
+});

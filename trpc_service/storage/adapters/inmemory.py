@@ -119,6 +119,37 @@ class _ScopedAdapter:
     def _scope(context: TenantContext) -> TenantScope:
         return context.tenant_id, context.agent_app_id
 
+    async def purge(self,
+                    tenant_id: UUID,
+                    agent_id: UUID | None = None,
+                    artifact_ids: list[str] | None = None,
+                    chunk_ids: list[str] | None = None) -> None:
+        """Discard only scoped test-backend data; retain independent audit facts."""
+        async with self._state.lock:
+            if artifact_ids is not None or chunk_ids is not None:
+                for key in artifact_ids or []:
+                    self._state.artifacts.pop((tenant_id, key), None)
+                knowledge = self._state.knowledge.get(tenant_id, {})
+                for key in chunk_ids or []:
+                    knowledge.pop(key, None)
+                return
+            for field_name in ("sessions", "committed_fencing_tokens", "session_fences", "outbox",
+                               "outbox_keys", "memories", "summaries"):
+                mapping = getattr(self._state, field_name)
+                for scoped_key in list(mapping):
+                    if scoped_key[0] == tenant_id and (agent_id is None
+                                                       or scoped_key[1] == agent_id):
+                        del mapping[scoped_key]
+            for inbox_key, inbox in list(self._state.inbox.items()):
+                if inbox.scope[0] == tenant_id and (agent_id is None or inbox.scope[1] == agent_id):
+                    del self._state.inbox[inbox_key]
+                    self._state.inbox_by_id.pop(inbox.inbox_id, None)
+            if agent_id is None:
+                self._state.knowledge.pop(tenant_id, None)
+                for artifact_key in list(self._state.artifacts):
+                    if artifact_key[0] == tenant_id:
+                        del self._state.artifacts[artifact_key]
+
 
 class InMemorySessionStore(_ScopedAdapter, SessionStore, OutboxStore):
     """Keep versioned Session facts with local Inbox and Outbox guarantees."""

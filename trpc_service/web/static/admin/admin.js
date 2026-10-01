@@ -10,7 +10,7 @@ const titles = {
 
 const {
   $, $$, escapeHTML, createApi, toast, setLoginError, badge, empty,
-  formatDate, compactNumber, setOptions, withLoading,
+  formatDate, compactNumber, setOptions, withLoading, purgeButton, installDeletionActions,
 } = window.ConsoleUI;
 const api = createApi(state, "interactive platform administration");
 
@@ -38,12 +38,13 @@ async function loadTenants() {
   const data = await api.all("/tenants");
   state.tenants = data.items;
   $("#tenant-rows").innerHTML = data.items.map((item) => `
-    <tr><td><span class="row-title">${escapeHTML(item.name)}</span><span class="row-subtitle mono">${escapeHTML(item.tenant_id)}</span></td>
+    <tr data-status="${escapeHTML(item.status)}"><td><span class="row-title">${escapeHTML(item.name)}</span><span class="row-subtitle mono">${escapeHTML(item.tenant_id)}</span></td>
     <td>${badge(item.status)}</td><td>${escapeHTML(item.isolation_mode)}</td><td>${formatDate(item.updated_at)}</td>
     <td><div class="actions"><button class="button secondary small tenant-edit" data-id="${item.tenant_id}">编辑</button>
-    ${item.status === "active" ? `<button class="button danger small tenant-remove" data-id="${item.tenant_id}">移除</button>` : `<button class="button secondary small tenant-enable" data-id="${item.tenant_id}">重新启用</button>`}
-    </div></td></tr>`).join("") || empty(5);
-  setOptions(".tenant-options, #profile-tenant", data.items.filter((item) => item.status === "active"), "tenant_id", (item) => item.name);
+    ${item.status === "active" ? `<button class="button danger small tenant-remove" data-id="${item.tenant_id}">停用</button>` : `<button class="button secondary small tenant-enable" data-id="${item.tenant_id}">重新启用</button>`}
+    ${purgeButton(`/admin/resources/tenants/${item.tenant_id}`, "tenants")}</div></td></tr>`).join("") || empty(5);
+  setOptions(".tenant-options", data.items.filter((item) => item.status === "active"), "tenant_id", (item) => item.name);
+  setOptions("#profile-tenant", data.items, "tenant_id", (item) => `${item.name}${item.status === "active" ? "" : "（已停用）"}`);
   $$(".tenant-edit").forEach((button) => button.addEventListener("click", () => openTenantEdit(button.dataset.id)));
   $$(".tenant-remove").forEach((button) => button.addEventListener("click", () => removeTenant(button)));
   $$(".tenant-enable").forEach((button) => button.addEventListener("click", () => enableTenant(button)));
@@ -51,13 +52,13 @@ async function loadTenants() {
 }
 
 async function loadAccounts() {
-  const data = await api.page("/admin/principals", "account-rows", loadAccounts);
+  const data = await api.all("/admin/principals");
   $("#account-rows").innerHTML = data.items.map((item) => {
     const isTenantAdmin = item.external_subject.startsWith("tenant-console:");
     const passwordAction = item.principal_type === "human" ? `<button class="button secondary small password-open" data-id="${item.management_principal_id}" data-subject="${escapeHTML(item.external_subject)}">重置密码</button>` : "";
     // A tenant has one administrator identity; password rotation is its recovery path.
     const statusAction = isTenantAdmin ? `<span class="row-subtitle">唯一账号不可停用</span>` : `<button class="button ${item.status === "active" ? "danger" : "secondary"} small principal-toggle" data-id="${item.management_principal_id}" data-status="${item.status}">${item.status === "active" ? "停用" : "启用"}</button>`;
-    return `<tr><td><span class="row-title">${escapeHTML(item.display_name)}</span><span class="row-subtitle mono">${escapeHTML(item.management_principal_id)}</span></td><td>${isTenantAdmin ? "租户管理员" : escapeHTML(item.principal_type)}</td><td class="mono">${escapeHTML(item.external_subject)}</td><td>${badge(item.status)}</td><td><div class="actions">${passwordAction}${statusAction}</div></td></tr>`;
+    return `<tr data-status="${escapeHTML(item.status)}"><td><span class="row-title">${escapeHTML(item.display_name)}</span><span class="row-subtitle mono">${escapeHTML(item.management_principal_id)}</span></td><td>${isTenantAdmin ? "租户管理员" : escapeHTML(item.principal_type)}</td><td class="mono">${escapeHTML(item.external_subject)}</td><td>${badge(item.status)}</td><td><div class="actions">${passwordAction}${statusAction}${purgeButton(`/admin/resources/principals/${item.management_principal_id}`, "accounts")}</div></td></tr>`;
   }).join("") || empty(5);
   $$(".password-open").forEach((button) => button.addEventListener("click", () => openPasswordDialog(button)));
   $$(".principal-toggle").forEach((button) => button.addEventListener("click", () => togglePrincipal(button)));
@@ -70,7 +71,7 @@ async function loadModels() {
   $("#model-rows").innerHTML = data.items.map((item) => {
     const limits = item.default_limits || {};
     const limitText = [limits.context_window_tokens ? `上下文 ${Number(limits.context_window_tokens).toLocaleString()}` : "", limits.max_output_tokens ? `输出 ${Number(limits.max_output_tokens).toLocaleString()}` : ""].filter(Boolean).join(" · ") || "未设置";
-    return `<tr><td><span class="row-title">${escapeHTML(item.display_name)}</span><span class="row-subtitle mono">${escapeHTML(item.model_name)}</span></td><td>${escapeHTML(item.provider)}</td><td><span class="row-title">${escapeHTML(limitText)}</span><span class="row-subtitle">${item.platform_credential_configured ? "平台凭据已配置" : "使用独立凭据"}</span></td><td>${badge(item.status)}</td><td><div class="actions"><button class="button secondary small model-edit" data-id="${item.model_catalog_id}">编辑</button>${item.status === "active" ? `<button class="button danger small model-remove" data-id="${item.model_catalog_id}">移除</button>` : `<button class="button secondary small model-enable" data-id="${item.model_catalog_id}">重新启用</button>`}</div></td></tr>`;
+    return `<tr data-status="${escapeHTML(item.status)}"><td><span class="row-title">${escapeHTML(item.display_name)}</span><span class="row-subtitle mono">${escapeHTML(item.model_name)}</span></td><td>${escapeHTML(item.provider)}</td><td><span class="row-title">${escapeHTML(limitText)}</span><span class="row-subtitle">${item.platform_credential_configured ? "平台凭据已配置" : "使用独立凭据"}</span></td><td>${badge(item.status)}</td><td><div class="actions"><button class="button secondary small model-edit" data-id="${item.model_catalog_id}">编辑</button>${item.status === "active" ? `<button class="button danger small model-remove" data-id="${item.model_catalog_id}">停用</button>` : `<button class="button secondary small model-enable" data-id="${item.model_catalog_id}">重新启用</button>`}${purgeButton(`/admin/resources/model-catalog/${item.model_catalog_id}`, "models")}</div></td></tr>`;
   }).join("") || empty(5);
   setOptions("#profile-model", data.items.filter((item) => item.status === "active"), "model_catalog_id", (item) => `${item.provider} / ${item.model_name}`);
   $$(".model-edit").forEach((button) => button.addEventListener("click", () => openModelEdit(button.dataset.id)));
@@ -82,7 +83,7 @@ async function loadModels() {
 async function loadCredentials() {
   const data = await api("/admin/model-credentials");
   state.credentials = data.items;
-  $("#credential-rows").innerHTML = data.items.map((item) => `<tr><td><span class="row-title">${escapeHTML(item.name)}</span><span class="row-subtitle mono">${escapeHTML(item.model_credential_id)}</span></td><td>${escapeHTML(item.provider)}</td><td>${item.secret_configured ? "已引用" : "未配置"}</td><td>${badge(item.status)}</td><td><div class="actions"><button class="button secondary small credential-edit" data-id="${item.model_credential_id}">编辑</button>${item.status === "active" ? `<button class="button danger small credential-remove" data-id="${item.model_credential_id}">移除</button>` : `<button class="button secondary small credential-enable" data-id="${item.model_credential_id}">重新启用</button>`}</div></td></tr>`).join("") || empty(5);
+  $("#credential-rows").innerHTML = data.items.map((item) => `<tr data-status="${escapeHTML(item.status)}"><td><span class="row-title">${escapeHTML(item.name)}</span><span class="row-subtitle mono">${escapeHTML(item.model_credential_id)}</span></td><td>${escapeHTML(item.provider)}</td><td>${item.secret_configured ? "已引用" : "未配置"}</td><td>${badge(item.status)}</td><td><div class="actions"><button class="button secondary small credential-edit" data-id="${item.model_credential_id}">编辑</button>${item.status === "active" ? `<button class="button danger small credential-remove" data-id="${item.model_credential_id}">停用</button>` : `<button class="button secondary small credential-enable" data-id="${item.model_credential_id}">重新启用</button>`}${purgeButton(`/admin/resources/model-credentials/${item.model_credential_id}`, "credentials")}</div></td></tr>`).join("") || empty(5);
   setOptions("#profile-credential", data.items.filter((item) => item.status === "active"), "model_credential_id", (item) => `${item.provider} / ${item.name}`);
   $$(".credential-edit").forEach((button) => button.addEventListener("click", () => openCredentialEdit(button.dataset.id)));
   $$(".credential-remove").forEach((button) => button.addEventListener("click", () => removeCredential(button)));
@@ -103,8 +104,8 @@ async function loadProfiles() {
   }
   const [data, agents] = await Promise.all([api(`/tenants/${tenantId}/model-profiles`), api.all(`/tenants/${tenantId}/agents`)]);
   state.profiles = data.items; state.agents = agents.items;
-  $("#profile-rows").innerHTML = data.items.map((item) => `<tr><td><span class="row-title">${escapeHTML(item.name)}</span><span class="row-subtitle mono">${escapeHTML(item.model_profile_id)}</span></td><td>${escapeHTML(modelLabel(item.model_catalog_id))}</td><td class="config-cell">${escapeHTML(JSON.stringify(item.parameter_config))}</td><td class="config-cell">${escapeHTML(JSON.stringify(item.limits))}</td><td>${badge(item.status)}</td><td><div class="actions"><button class="button secondary small profile-edit" data-id="${item.model_profile_id}">编辑</button>${item.status === "active" ? `<button class="button danger small profile-remove" data-id="${item.model_profile_id}">移除</button>` : `<button class="button secondary small profile-enable" data-id="${item.model_profile_id}">重新启用</button>`}</div></td></tr>`).join("") || empty(6);
-  $("#profile-agent-rows").innerHTML = agents.items.map((item) => `<tr><td><span class="row-title">${escapeHTML(item.name)}</span><span class="row-subtitle mono">${escapeHTML(item.agent_app_id)}</span></td><td>${escapeHTML(profileLabel(item.model_profile_id))}</td><td>${badge(item.status)}</td><td>v${item.stable_config_version}</td><td><button class="button secondary small agent-profile-edit" data-id="${item.agent_app_id}">调整策略</button></td></tr>`).join("") || empty(5, "该租户暂无 Agent");
+  $("#profile-rows").innerHTML = data.items.map((item) => `<tr data-status="${escapeHTML(item.status)}"><td><span class="row-title">${escapeHTML(item.name)}</span><span class="row-subtitle mono">${escapeHTML(item.model_profile_id)}</span></td><td>${escapeHTML(modelLabel(item.model_catalog_id))}</td><td class="config-cell">${escapeHTML(JSON.stringify(item.parameter_config))}</td><td class="config-cell">${escapeHTML(JSON.stringify(item.limits))}</td><td>${badge(item.status)}</td><td><div class="actions"><button class="button secondary small profile-edit" data-id="${item.model_profile_id}">编辑</button>${item.status === "active" ? `<button class="button danger small profile-remove" data-id="${item.model_profile_id}">停用</button>` : `<button class="button secondary small profile-enable" data-id="${item.model_profile_id}">重新启用</button>`}${purgeButton(`/tenants/${tenantId}/resources/model-profiles/${item.model_profile_id}`, "profiles")}</div></td></tr>`).join("") || empty(6);
+  $("#profile-agent-rows").innerHTML = agents.items.map((item) => `<tr data-status="${escapeHTML(item.status)}"><td><span class="row-title">${escapeHTML(item.name)}</span><span class="row-subtitle mono">${escapeHTML(item.agent_app_id)}</span></td><td>${escapeHTML(profileLabel(item.model_profile_id))}</td><td>${badge(item.status)}</td><td>v${item.stable_config_version}</td><td><button class="button secondary small agent-profile-edit" data-id="${item.agent_app_id}">调整策略</button></td></tr>`).join("") || empty(5, "该租户暂无 Agent");
   $$(".profile-edit").forEach((button) => button.addEventListener("click", () => openProfileEdit(button.dataset.id)));
   $$(".profile-remove").forEach((button) => button.addEventListener("click", () => removeProfile(button)));
   $$(".profile-enable").forEach((button) => button.addEventListener("click", () => enableProfile(button)));
@@ -115,7 +116,7 @@ async function loadProfiles() {
 async function loadRuntime() {
   const [data, pool] = await Promise.all([api("/admin/runtime-nodes"), api("/admin/worker-pool")]);
   state.nodes = data.items; state.workerPool = pool;
-  $("#runtime-rows").innerHTML = data.items.map((item) => `<tr><td><span class="row-title">${escapeHTML(item.node_id)}</span><span class="row-subtitle">启动于 ${formatDate(item.started_at)}</span></td><td>${escapeHTML(item.role)}</td><td>${item.worker_concurrency}</td><td>${formatDate(item.heartbeat_at)}</td><td>${badge(item.health)}</td></tr>`).join("") || empty(5);
+  $("#runtime-rows").innerHTML = data.items.map((item) => `<tr data-status="${escapeHTML(item.status)}"><td><span class="row-title">${escapeHTML(item.node_id)}</span><span class="row-subtitle">启动于 ${formatDate(item.started_at)}</span></td><td>${escapeHTML(item.role)}</td><td>${item.worker_concurrency}</td><td>${formatDate(item.heartbeat_at)}</td><td>${badge(item.health)}</td></tr>`).join("") || empty(5);
   $("#pool-desired").textContent = pool.desired_nodes; $("#pool-active").textContent = pool.active_nodes;
   $("#pool-draining").textContent = pool.draining_nodes; $("#pool-stale").textContent = pool.stale_nodes;
   $("#worker-pool-desired").value = pool.desired_nodes;
@@ -134,7 +135,7 @@ async function loadUsage() {
 
 async function loadAdapters() {
   const data = await api("/admin/channel-adapter-types");
-  $("#adapter-rows").innerHTML = data.items.map((item) => `<tr><td><span class="row-title">${escapeHTML(item.display_name)}</span><span class="row-subtitle mono">${escapeHTML(item.channel_type)}</span></td><td>${escapeHTML(item.adapter_version)}</td><td class="mono">${escapeHTML(Object.keys(item.capabilities || {}).join("、") || "—")}</td><td>${badge(item.status)}</td><td><button class="button ${item.status === "active" ? "danger" : "secondary"} small adapter-toggle" data-id="${escapeHTML(item.channel_type)}" data-status="${item.status}">${item.status === "active" ? "停用" : "启用"}</button></td></tr>`).join("") || empty(5);
+  $("#adapter-rows").innerHTML = data.items.map((item) => `<tr data-status="${escapeHTML(item.status)}"><td><span class="row-title">${escapeHTML(item.display_name)}</span><span class="row-subtitle mono">${escapeHTML(item.channel_type)}</span></td><td>${escapeHTML(item.adapter_version)}</td><td class="mono">${escapeHTML(Object.keys(item.capabilities || {}).join("、") || "—")}</td><td>${badge(item.status)}</td><td><button class="button ${item.status === "active" ? "danger" : "secondary"} small adapter-toggle" data-id="${escapeHTML(item.channel_type)}" data-status="${item.status}">${item.status === "active" ? "停用" : "启用"}</button></td></tr>`).join("") || empty(5);
   $$(".adapter-toggle").forEach((button) => button.addEventListener("click", () => toggleAdapter(button)));
   return data;
 }
@@ -190,8 +191,8 @@ function showView(name) {
 }
 
 async function removeTenant(button) {
-  if (!confirm("确认移除该租户？其 Agent、IM 接入将停止使用；历史配置和审计记录仍会保留。")) return;
-  await mutate({ button, request: () => api(`/tenants/${button.dataset.id}`, { method: "DELETE" }), success: "租户已移除", refreshView: "tenants" });
+  if (!confirm("确认停用该租户？其 Agent、IM 接入将停止使用；历史配置和审计记录仍会保留。")) return;
+  await mutate({ button, request: () => api(`/tenants/${button.dataset.id}`, { method: "PATCH", body: JSON.stringify({ status: "disabled" }) }), success: "租户已停用", refreshView: "tenants" });
 }
 
 async function enableTenant(button) {
@@ -205,8 +206,8 @@ async function togglePrincipal(button) {
 }
 
 async function removeModel(button) {
-  if (!confirm("确认移除该模型目录项？已被活跃 Agent 使用时，系统会拒绝本次操作。")) return;
-  await mutate({ button, request: () => api(`/admin/model-catalog/${button.dataset.id}`, { method: "DELETE" }), success: "模型已从可用目录移除", refreshView: "models" });
+  if (!confirm("确认停用该模型目录项？已被活跃 Agent 使用时，系统会拒绝本次操作。")) return;
+  await mutate({ button, request: () => api(`/admin/model-catalog/${button.dataset.id}`, { method: "PATCH", body: JSON.stringify({ status: "disabled" }) }), success: "模型已从可用目录停用", refreshView: "models" });
 }
 
 async function enableModel(button) {
@@ -214,8 +215,8 @@ async function enableModel(button) {
 }
 
 async function removeCredential(button) {
-  if (!confirm("确认移除该模型凭据？已被活跃 Agent 使用时，系统会拒绝本次操作。")) return;
-  await mutate({ button, request: () => api(`/admin/model-credentials/${button.dataset.id}`, { method: "DELETE" }), success: "模型凭据已移除", refreshView: "credentials" });
+  if (!confirm("确认停用该模型凭据？已被活跃 Agent 使用时，系统会拒绝本次操作。")) return;
+  await mutate({ button, request: () => api(`/admin/model-credentials/${button.dataset.id}`, { method: "PATCH", body: JSON.stringify({ status: "disabled" }) }), success: "模型凭据已停用", refreshView: "credentials" });
 }
 
 async function enableCredential(button) {
@@ -224,8 +225,8 @@ async function enableCredential(button) {
 
 async function removeProfile(button) {
   const tenantId = $("#profile-tenant").value;
-  if (!confirm("确认移除该模型策略？请先将引用它的 Agent 调整到其他策略。")) return;
-  await mutate({ button, request: () => api(`/tenants/${tenantId}/model-profiles/${button.dataset.id}`, { method: "DELETE" }), success: "模型策略已移除", refreshView: "profiles" });
+  if (!confirm("确认停用该模型策略？请先将引用它的 Agent 调整到其他策略。")) return;
+  await mutate({ button, request: () => api(`/tenants/${tenantId}/model-profiles/${button.dataset.id}`, { method: "PATCH", body: JSON.stringify({ status: "disabled" }) }), success: "模型策略已停用", refreshView: "profiles" });
 }
 
 async function enableProfile(button) {
@@ -485,3 +486,12 @@ $("#agent-profile-form").addEventListener("submit", async (event) => {
   try { await enterConsole(); }
   catch (error) { if (error.status !== 401) setLoginError(error.message); }
 })();
+
+installDeletionActions(api, {
+  historyPath: () => "/admin/deletions",
+  onDeleted: async (view) => {
+    state.models = []; state.credentials = []; state.profiles = []; state.agents = [];
+    await loadTenants();
+    await refresh(view);
+  },
+});

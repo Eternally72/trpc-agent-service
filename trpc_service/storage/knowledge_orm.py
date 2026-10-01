@@ -56,11 +56,6 @@ class KnowledgeArtifactRow(Base, TimestampMixin):
     __tablename__ = "knowledge_artifact"
     __table_args__ = (
         ForeignKeyConstraint(["tenant_id"], ["tenant.tenant_id"], ondelete="RESTRICT"),
-        ForeignKeyConstraint(
-            ["tenant_id", "uploaded_by_agent_id"],
-            ["agent_app.tenant_id", "agent_app.agent_app_id"],
-            ondelete="RESTRICT",
-        ),
         UniqueConstraint("tenant_id", "checksum", name="uq_knowledge_artifact_checksum"),
         CheckConstraint("size_bytes >= 0", name="knowledge_artifact_size_nonnegative"),
     )
@@ -107,7 +102,7 @@ class KnowledgeDocumentRow(Base, TimestampMixin):
         CheckConstraint("version > 0", name="doc_version_positive"),
         CheckConstraint("chunk_count >= 0", name="doc_chunks_nonnegative"),
         CheckConstraint(
-            "status IN ('INGESTING', 'READY', 'FAILED', 'SUPERSEDED', 'DELETED')",
+            "status IN ('INGESTING', 'READY', 'FAILED', 'SUPERSEDED', 'DELETED', 'DISABLED')",
             name="doc_status",
         ),
         Index(

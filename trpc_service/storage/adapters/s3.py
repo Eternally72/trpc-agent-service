@@ -6,7 +6,7 @@ import hashlib
 from collections.abc import AsyncIterator
 from tempfile import SpooledTemporaryFile
 from typing import BinaryIO, Protocol, cast
-from uuid import NAMESPACE_URL, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from botocore.exceptions import ClientError
 
@@ -72,6 +72,12 @@ class S3Client(Protocol):
     ) -> dict[str, object]:
         """Create a bucket."""
 
+        ...
+
+    def delete_object(self, *, Bucket: str, Key: str) -> dict[str, object]:
+        ...
+
+    def list_objects_v2(self, **kwargs: object) -> dict[str, object]:
         ...
 
     def generate_presigned_url(
@@ -259,3 +265,30 @@ class S3ArtifactStore(ArtifactStore):
             Params=params,
             ExpiresIn=ttl_seconds,
         )
+
+    async def purge(self, tenant_id: UUID, artifact_ids: list[str] | None = None) -> None:
+        """Delete only this tenant's objects; retrying missing keys is safe."""
+        prefix = f"{tenant_id}/"
+        if artifact_ids is not None:
+            for artifact_id in artifact_ids:
+                # Artifact identifiers are UUIDs, never paths supplied by a client.
+                key = prefix + str(UUID(artifact_id))
+                await asyncio.to_thread(self._client.delete_object, Bucket=self._bucket, Key=key)
+            return
+        # Delete the first bounded page repeatedly: do not reuse continuation
+        # tokens while mutating the key set.
+        while True:
+            result = await asyncio.to_thread(self._client.list_objects_v2,
+                                             Bucket=self._bucket,
+                                             Prefix=prefix,
+                                             MaxKeys=100)
+            objects = result.get("Contents", [])
+            if not isinstance(objects, list):
+                raise ValueError("invalid object listing")
+            if not objects:
+                return
+            for entry in objects:
+                key = entry.get("Key")
+                if not isinstance(key, str) or not key.startswith(prefix):
+                    raise ValueError("object listing escaped tenant prefix")
+                await asyncio.to_thread(self._client.delete_object, Bucket=self._bucket, Key=key)

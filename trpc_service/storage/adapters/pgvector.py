@@ -1,6 +1,7 @@
 """pgvector implementation of tenant-scoped knowledge retrieval."""
 
 import json
+from uuid import UUID
 from collections.abc import Sequence
 from typing import cast
 
@@ -207,3 +208,13 @@ class PgVectorKnowledgeStore(KnowledgeStore):
                     "document_ids": list(document_ids),
                 },
             )
+
+    async def purge(self, tenant_id: UUID, chunk_ids: list[str] | None = None) -> None:
+        """Remove a tenant or selected chunks without invoking an embedding model."""
+        from sqlalchemy import delete
+        from trpc_service.storage.knowledge_orm import KnowledgeChunkVectorRow
+        condition = KnowledgeChunkVectorRow.tenant_id == tenant_id
+        if chunk_ids is not None:
+            condition = condition & KnowledgeChunkVectorRow.document_id.in_(chunk_ids)
+        async with self._sessions.begin() as session:
+            await session.execute(delete(KnowledgeChunkVectorRow).where(condition))

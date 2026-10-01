@@ -6,19 +6,21 @@ import sys
 from zipfile import ZipFile
 import hashlib
 import logging
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from functools import wraps
 from io import BytesIO
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, ParamSpec, TypeVar
 from uuid import UUID, uuid4
 
 from docx import Document as DocxDocument
 from pypdf import PdfReader
 from sqlalchemy import delete, func, select, text as sql_text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from trpc_service.admin.deletion_guard import configuration_guard, require_cleanup_complete
 from trpc_service.storage.knowledge_orm import (
     KnowledgeArtifactRow,
     KnowledgeBaseRow,
@@ -219,6 +221,29 @@ async def _lock_scope(database: AsyncSession, key: str) -> None:
         )
 
 
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+
+def _guard_ingestion(function: Callable[_P, Awaitable[_R]]) -> Callable[_P, Awaitable[_R]]:
+
+    @wraps(function)
+    async def guarded(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        owner = args[0]
+        context = args[1] if len(args) > 1 else kwargs.get("context")
+        if not isinstance(owner, TenantKnowledgeService) or not isinstance(context, TenantContext):
+            raise TypeError("invalid knowledge ingestion scope")
+        engine = owner._sessions.kw["bind"]
+        if not isinstance(engine, AsyncEngine):
+            raise TypeError("knowledge ingestion requires an async engine")
+        async with configuration_guard(engine):
+            async with owner._sessions() as database:
+                await require_cleanup_complete(database, context.tenant_id)
+            return await function(*args, **kwargs)
+
+    return guarded
+
+
 class TenantKnowledgeService:
     """Coordinate SQL metadata, object storage, and a replaceable vector index."""
 
@@ -381,8 +406,21 @@ class TenantKnowledgeService:
             size_bytes=len(payload),
         )
 
+        return await self._persist_upload(context, principal_id, bytes(payload), metadata, backends)
+
+    @_guard_ingestion
+    async def _persist_upload(
+        self,
+        context: TenantContext,
+        principal_id: str,
+        payload: bytes,
+        metadata: ArtifactMetadata,
+        backends: Mapping[str, object] | None,
+    ) -> KnowledgeArtifact:
+        """Only validated uploads acquire the persistence/deletion barrier."""
+
         async def blocks() -> AsyncIterator[bytes]:
-            yield bytes(payload)
+            yield payload
 
         _, artifacts = self._stores(backends)
         reference = await artifacts.put(context, blocks(), metadata)
@@ -440,6 +478,7 @@ class TenantKnowledgeService:
             replace_document_id=document_id,
         )
 
+    @_guard_ingestion
     async def _ingest_one(
         self,
         context: TenantContext,
@@ -673,6 +712,8 @@ class TenantKnowledgeService:
         config: Mapping[str, object],
         knowledge_base_name: str,
         backends: Mapping[str, object] | None = None,
+        *,
+        include_inactive: bool = False,
     ) -> tuple[KnowledgeDocumentState, ...]:
         """List only active documents in one explicitly granted tenant base."""
 
@@ -690,9 +731,15 @@ class TenantKnowledgeService:
                 select(KnowledgeDocumentRow).where(
                     KnowledgeDocumentRow.tenant_id == context.tenant_id,
                     KnowledgeDocumentRow.knowledge_base_id == base.knowledge_base_id,
-                    KnowledgeDocumentRow.status == "READY",
+                    (KnowledgeDocumentRow.status.is_not(None)
+                     if include_inactive else KnowledgeDocumentRow.status == "READY"),
                 ).order_by(KnowledgeDocumentRow.filename,
                            KnowledgeDocumentRow.version.desc()))).all()
+        if include_inactive:
+            latest: dict[str, KnowledgeDocumentRow] = {}
+            for row in rows:
+                latest.setdefault(row.filename, row)
+            rows = list(latest.values())
         return tuple(_document_state(row) for row in rows)
 
     def _validate_embedding_model(self, base: KnowledgeBaseRow) -> None:

@@ -1,5 +1,6 @@
 """Small PostgreSQL adapters for independently selectable storage capabilities."""
 
+from uuid import UUID
 from collections.abc import Sequence
 from decimal import Decimal, InvalidOperation
 from uuid import uuid4
@@ -24,6 +25,16 @@ class _PostgreSQLAdapter:
 
     def __init__(self, sessions: async_sessionmaker[AsyncSession]) -> None:
         self._sessions = sessions
+
+    async def purge(self, tenant_id: UUID, agent_id: UUID | None = None) -> None:
+        """Remove rebuildable memory/summary content, preserving audit history."""
+        from sqlalchemy import delete
+        async with self._sessions.begin() as session:
+            for model in (MemoryRecordRow, SessionSummaryRow):
+                condition = model.tenant_id == tenant_id
+                if agent_id is not None:
+                    condition = condition & (model.agent_app_id == agent_id)
+                await session.execute(delete(model).where(condition))
 
 
 class PostgreSQLMemoryStore(_PostgreSQLAdapter, MemoryStore):

@@ -260,3 +260,34 @@ button:disabled { cursor: not-allowed; }
   .actor-name { max-width: calc(100vw - 150px); }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition-duration: 0s !important; animation: none !important; } }
+
+/* Destructive actions share a consistent, explicit review surface. */
+.table-filter { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.table-filter select { width: auto; min-width: 152px; }
+.table-filter input { flex: 1; min-width: 160px; }
+.purge-action { margin-left: 6px; border-color: transparent !important; }
+.deletion-dialog { width: min(680px, calc(100vw - 32px)); }
+.deletion-body { padding: 24px; max-height: 70vh; overflow-y: auto; }
+.deletion-target { display: grid; gap: 8px; padding-bottom: 20px; border-bottom: 1px solid var(--line); }
+.deletion-target > span, .deletion-counts span { color: var(--muted); font-size: 12px; }
+.deletion-target strong { font-size: 20px; overflow-wrap: anywhere; }
+.deletion-counts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; padding: 20px 0; }
+.deletion-counts > div { display: grid; gap: 5px; }
+.deletion-counts strong { color: var(--ink); font-size: 22px; }
+.deletion-note { color: var(--muted); font-size: 12px; line-height: 1.7; }
+.deletion-blockers { padding: 16px; border-left: 3px solid var(--warning); background: var(--warning-soft); color: #73520d; font-size: 13px; line-height: 1.7; }
+.deletion-blockers ul { margin: 8px 0 0; padding-left: 20px; overflow-wrap: anywhere; }
+.deletion-form { margin-top: 24px; }
+.deletion-form .dialog-actions { position: static; margin: 20px 0 0; padding: 18px 0 0; }
+.button.danger-solid { background: var(--danger); color: #fff; }
+.button.danger-solid:hover { background: #8c1d15; }
+.deletion-receipt { display: flex; gap: 16px; align-items: center; padding: 16px 0; border-bottom: 1px solid var(--line); }
+.deletion-receipt > div { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.deletion-empty { color: var(--muted); text-align: center; padding: 24px 0; }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+@media (max-width: 600px) {
+  .deletion-counts { grid-template-columns: repeat(2, 1fr); }
+  .deletion-body { padding: 18px; }
+  .deletion-receipt { flex-wrap: wrap; }
+  .top-actions { flex-wrap: wrap; justify-content: flex-end; }
+}

@@ -634,12 +634,6 @@ class AuditLogRow(Base):
 
     __tablename__ = "audit_log"
     __table_args__ = (
-        ForeignKeyConstraint(
-            ["tenant_id", "agent_app_id"],
-            ["agent_app.tenant_id", "agent_app.agent_app_id"],
-            name="fk_audit_log_tenant_agent",
-            ondelete="RESTRICT",
-        ),
         Index("ix_audit_log_scope_occurred", "tenant_id", "agent_app_id", "occurred_at"),
         Index("ix_audit_log_scope_trace", "tenant_id", "trace_id"),
         Index("ix_audit_log_scope_session", "tenant_id", "session_id", "occurred_at"),
@@ -744,12 +738,6 @@ class UsageLedgerRow(Base):
 
     __tablename__ = "usage_ledger"
     __table_args__ = (
-        ForeignKeyConstraint(
-            ["tenant_id", "agent_app_id"],
-            ["agent_app.tenant_id", "agent_app.agent_app_id"],
-            name="fk_usage_ledger_tenant_agent",
-            ondelete="RESTRICT",
-        ),
         UniqueConstraint("tenant_id", "request_id", name="uq_usage_ledger_tenant_request"),
         CheckConstraint(
             "input_tokens >= 0 AND output_tokens >= 0 AND total_tokens >= 0",

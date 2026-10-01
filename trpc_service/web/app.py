@@ -8,14 +8,16 @@ from pathlib import Path
 from time import perf_counter
 from uuid import uuid4
 
-from fastapi import FastAPI, Request, status
+from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import FileResponse, Response
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from trpc_service.admin.deletion_guard import configuration_guard
 from trpc_service.admin.login_guard import LoginGuard
+from trpc_service.admin.deletion_router import router as deletion_router
 from trpc_service.agent.router import router as agent_router
 from trpc_service.admin.profile_router import (
     catalog_router as tenant_model_catalog_router,
@@ -116,6 +118,23 @@ def create_app(
                     perf_counter() - started,
                 )
 
+    @app.middleware("http")
+    async def protect_configuration(request: Request, call_next):  # type: ignore[no-untyped-def]
+        path = request.url.path.removeprefix(app_settings.api_prefix)
+        manages = path.startswith(("/admin/", "/tenants"))
+        if request.method in {"GET", "HEAD", "OPTIONS"} or not manages:
+            return await call_next(request)
+        exclusive = path.endswith("/purge") or ("/deletions/" in path and path.endswith("/retry"))
+        try:
+            async with configuration_guard(app_engine, exclusive=exclusive):
+                return await call_next(request)
+        except HTTPException as error:
+            return JSONResponse(status_code=error.status_code,
+                                content={"error": {
+                                    "code": "conflict",
+                                    "message": error.detail
+                                }})
+
     console_assets = Path(__file__).with_name("static")
     admin_assets = console_assets / "admin"
     tenant_assets = console_assets / "tenant"
@@ -126,6 +145,7 @@ def create_app(
     app.state.engine = app_engine
     app.state.session_factory = app_container.session_factory
     app.state.container = app_container
+    app.include_router(deletion_router, prefix=app_settings.api_prefix)
     app.include_router(tenant_router, prefix=app_settings.api_prefix)
     app.include_router(admin_router, prefix=app_settings.api_prefix)
     app.include_router(management_auth_router, prefix=app_settings.api_prefix)

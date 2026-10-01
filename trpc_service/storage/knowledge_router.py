@@ -7,7 +7,9 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from typing import Literal
+from trpc_service.storage.knowledge_orm import KnowledgeBaseRow, KnowledgeDocumentRow
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from trpc_service.admin.audit import append_management_audit
@@ -95,6 +97,7 @@ async def list_knowledge_documents(
         knowledge_base_name: Annotated[str, Path(min_length=1, max_length=120)],
         request: Request,
         agent_app_id: UUID = Query(),
+        include_inactive: bool = Query(default=False),
         _: ManagementActor = Depends(require_tenant_admin),
         database: AsyncSession = Depends(get_session),
 ) -> KnowledgeDocumentList:
@@ -107,6 +110,7 @@ async def list_knowledge_documents(
             agent.knowledge_config,
             knowledge_base_name,
             backends=agent.backend_config,
+            include_inactive=include_inactive,
         )
     except Exception as error:
         _raise_knowledge_error(error)
@@ -258,3 +262,55 @@ async def delete_knowledge_document(
     )
     await database.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+class KnowledgeStatusUpdate(BaseModel):
+    status: Literal["READY", "DISABLED"]
+
+
+@router.patch("/{document_id}", response_model=KnowledgeDocumentRead)
+async def set_knowledge_status(
+        tenant_id: UUID,
+        knowledge_base_name: str,
+        document_id: UUID,
+        payload: KnowledgeStatusUpdate,
+        agent_app_id: UUID = Query(),
+        actor: ManagementActor = Depends(require_tenant_admin),
+        database: AsyncSession = Depends(get_session),
+) -> KnowledgeDocumentRead:
+    """Suspend retrieval without destroying vectors, or restore the latest version."""
+    agent, _ = await _agent_context(database, tenant_id, agent_app_id)
+    if knowledge_base_name not in agent.knowledge_config.get("knowledge_base_names", []):
+        raise HTTPException(403, "Agent 未获授权访问此知识库")
+    document = await database.scalar(
+        select(KnowledgeDocumentRow).join(
+            KnowledgeBaseRow,
+            (KnowledgeBaseRow.tenant_id == KnowledgeDocumentRow.tenant_id)
+            & (KnowledgeBaseRow.knowledge_base_id == KnowledgeDocumentRow.knowledge_base_id),
+        ).where(KnowledgeDocumentRow.tenant_id == tenant_id,
+                KnowledgeDocumentRow.document_id == document_id,
+                KnowledgeBaseRow.name == knowledge_base_name).with_for_update())
+    if document is None:
+        raise HTTPException(404, "知识文档不存在")
+    latest = await database.scalar(
+        select(func.max(KnowledgeDocumentRow.version)).where(
+            KnowledgeDocumentRow.tenant_id == tenant_id,
+            KnowledgeDocumentRow.knowledge_base_id == document.knowledge_base_id,
+            KnowledgeDocumentRow.filename == document.filename))
+    if document.status not in {"READY", "DISABLED"} or document.version != latest:
+        raise HTTPException(409, "仅可启用或停用最新的有效文档版本")
+    document.status = payload.status
+    append_management_audit(database,
+                            actor,
+                            action="knowledge_document.status",
+                            resource_type="knowledge_document",
+                            resource_id=str(document_id),
+                            tenant_id=tenant_id,
+                            details_redacted={"status": payload.status})
+    await database.commit()
+    return KnowledgeDocumentRead(document_id=document.document_id,
+                                 knowledge_base_id=document.knowledge_base_id,
+                                 filename=document.filename,
+                                 version=document.version,
+                                 chunk_count=document.chunk_count,
+                                 status=document.status)

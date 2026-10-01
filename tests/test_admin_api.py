@@ -84,7 +84,8 @@ async def test_admin_console_remains_available_without_temporary_webui(
     assert 'id="agent-profile-dialog"' in page.text
     assert 'id="profile-agent-rows"' in page.text
     assert "model_catalog_id" in script.text
-    assert 'method: "DELETE"' in script.text
+    assert 'method: "DELETE"' in shared_script.text
+    assert "installDeletionActions" in script.text
     assert page.headers["cache-control"] == "no-store"
     assert "frame-ancestors 'none'" in page.headers["content-security-policy"]
     assert tenant_page.headers["cache-control"] == "no-store"

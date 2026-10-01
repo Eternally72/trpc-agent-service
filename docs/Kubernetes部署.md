@@ -2,7 +2,9 @@
 
 ## 定位
 
-Docker Desktop 的 3 节点 Kubernetes 集群用于本地部署验收。运行拓扑初始为 2 个 Gateway、2 个无状态 Agent Worker、1 个 IM Channel Runtime、1 个 Worker Scaler，以及共享存储和可观测组件。所有资源归属于 `trpc-agent-service` Namespace，并通过标准 Label 在逻辑上归为同一应用；Pod 名称由 Deployment/StatefulSet 控制器生成，不应手工改名。
+2026-09-29 对照 `deploy/kubernetes/` 清单整理。已有 Docker Desktop 三节点部署人工验收记录，见[测试结果](测试结果.md)；本次文档更新没有重新部署集群。Locust 容量测试运行在单台 WSL 主机，不能把其吞吐和延迟标为该集群的实测值。
+
+清单初始为 2 个 Gateway、2 个 Agent Worker、1 个 IM Channel Runtime、1 个 Worker Scaler，以及共享存储和监控组件。资源位于 `trpc-agent-service` Namespace，Pod 由 Deployment/StatefulSet 创建。
 
 正式生产可以复用这些清单，但 PostgreSQL、Redis、对象存储和监控存储应替换为高可用或托管服务，并补充 Ingress TLS、远端镜像仓库、备份策略和跨故障域调度。
 
@@ -32,9 +34,9 @@ flowchart TB
     LOKI --> GRAFANA
 ```
 
-`Agent Worker × N` 的 N 来自数据库中的期望节点数；初始清单为 2，系统管理端修改后由 Scaler 收敛。Gateway、Worker、Channel 和 Scaler 是独立 Deployment，业务事实都进入共享存储。
+`Agent Worker × N` 的 N 来自数据库中的期望节点数；初始清单为 2，系统管理端修改后由 Scaler 收敛。Gateway、Worker、Channel 和 Scaler 是独立 Deployment，业务事实都进入共享存储。Worker Pod 当前显式设置 `TRPC_SERVICE_WORKER_CONCURRENCY=1`，即每进程 1 个异步 slot；增加副本数与调整每个 Worker 的 slot 数是不同操作。
 
-本地脚本模式和 Kubernetes 模式是两套启动方式。两者会占用相同的 8000、3000、9090 等本机端口，切换前必须先执行 `./stop.sh` 或 `./deploy/kubernetes/stop.sh`，不能同时运行。
+本地脚本模式和 Kubernetes 模式会使用相同的 8000、3000、9090 等本机端口，不能直接按默认配置同时运行。本地切到 Kubernetes 前执行 `./stop.sh`。反向切换时要注意：`./deploy/kubernetes/stop.sh` 只把应用副本缩为零，保留数据库、监控和 Service，不保证释放 LoadBalancer 的本机端口。先检查 `kubectl get services -n trpc-agent-service`，处理端口暴露冲突或调整本地端口与连接配置，再启动 Compose 模式。
 
 ## 部署
 
@@ -58,7 +60,7 @@ docker compose down
 如果只修改了 Kubernetes 清单或运行配置，或者目标应用镜像已由 CI 构建，可以显式复用本机已有镜像，避免重复构建：
 
 ```bash
-TRPC_K8S_REUSE_IMAGE=trpc-agent-service:<已有标签> ./deploy/kubernetes/deploy.sh
+TRPC_K8S_REUSE_IMAGE='trpc-agent-service:your-existing-tag' ./deploy/kubernetes/deploy.sh
 ```
 
 应用代码发生变化时仍应使用默认命令构建新镜像；复用模式会先验证镜像存在，再执行迁移和滚动发布。
@@ -67,7 +69,9 @@ TRPC_K8S_REUSE_IMAGE=trpc-agent-service:<已有标签> ./deploy/kubernetes/deplo
 
 新建或更新的 IM Binding 由租户管理员在 `/tenant` 中配置，密钥以数据库密文保存。部署脚本**不会**把旧的本地文件型 IM SecretRef 挂载进 Pod；如导入的旧 Binding 仍引用这类文件，部署后需在租户控制台重新保存密钥，使其转为数据库密文，否则对应 IM 长连接无法使用。
 
-当前清单已经覆盖 Redis 近期会话缓存、PostgreSQL/pgvector 持久事实与向量、SeaweedFS Artifact（S3 入口和内部 Volume 数据通道）、租户加密 IM/MCP 凭据、Skill 文件、MCP 出站调用、动态 Worker 扩缩容，以及 Prometheus、Grafana、Tempo、Loki、Alloy 全链路可观测。上述应用能力都随同一镜像和共享配置发布，不需要为 Skill、MCP 或新的 IM Adapter 单独增加 Pod。
+模型和 Embedding 示例来自 `app.env`，不等于本地控制台的所有配置都已迁移。部署前核对 Profile 引用的凭据在 Pod 内是否可用，Embedding 模型是否与知识库记录一致。当前向量列固定为 1024 维；仅更换模型名不会重建旧索引。
+
+清单提供 Redis、PostgreSQL/pgvector、SeaweedFS 和监控组件。Skill、MCP 客户端随应用镜像运行，不为每个租户创建独立 Pod。部署成功后仍需验证模型额度、机器人权限、MCP 出站访问和知识文件可读性。
 
 ## 验证
 
@@ -110,4 +114,6 @@ Kubernetes 缩容时先向 Pod 发送 `SIGTERM`。Worker 立即进入 `draining`
 ./deploy/kubernetes/remove.sh --confirm-delete-data
 ```
 
-本地 StorageClass 使用节点本地卷，只适合单机验收。Worker 的 `/data/workspaces` 使用 Pod 独立 `emptyDir`，每个请求仍会得到标准 Workspace，但跨 Pod 重试不会继承其中的临时文件；需要保留的结果必须写入 Artifact 对象存储。Session、Memory、RAG、审批、审计和任务状态均保存在共享后端，因此 Worker 不需要 Sticky Session。若生产环境需要跨 Pod 延续 Workspace，应改用支持 RWX 的卷或实现远程 Sandbox `WorkspaceProvider`，不能依赖节点本地目录。
+本地 StorageClass 使用节点本地卷，不能据此承诺跨节点存储容灾。Worker 的 `/data/workspaces` 使用 Pod 独立 `emptyDir`。目录 ID 还包含当前执行 fence，接管使用新目录，不继承旧尝试的临时文件；改成 RWX 共享卷也不会改变这个语义。需要保留的结果必须写入 Artifact 或数据库。
+
+Session、知识文档状态、审批、审计和任务事实都保存在共享后端，Worker 不需要 Sticky Session。Channel Runtime 目前只有一个副本，本地存储和 IM 连接所有权也没有组成跨故障域高可用方案。生产部署还需配置 TLS、安全 Cookie、数据库和对象存储容灾，以及实际告警接收。

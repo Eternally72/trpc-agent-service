@@ -12,6 +12,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from trpc_service.admin.deletion_guard import require_cleanup_complete
 from trpc_service.agent.approval import ApprovalService
 from trpc_service.agent.audit import StorageAuditRecorder
 from trpc_service.agent.contracts import (
@@ -155,6 +156,7 @@ class DatabaseAgentConfigProvider(AgentConfigProvider):
         """Load the exact released Backend Profile selected before IM download."""
 
         async with self._session_factory() as session:
+            await require_cleanup_complete(session, context.tenant_id)
             agent = await session.scalar(
                 select(AgentApp).where(
                     AgentApp.tenant_id == context.tenant_id,
@@ -187,6 +189,7 @@ class DatabaseAgentConfigProvider(AgentConfigProvider):
         """Return a fail-closed model selection for the request's Agent App."""
 
         async with self._session_factory() as session:
+            await require_cleanup_complete(session, request.tenant.tenant_id)
             agent = await session.scalar(
                 select(AgentApp).where(
                     AgentApp.tenant_id == request.tenant.tenant_id,
