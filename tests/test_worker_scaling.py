@@ -46,6 +46,34 @@ class FakeWorkerProcess:
         pass
 
 
+@pytest.mark.anyio
+async def test_kubernetes_capacity_reloads_rotated_service_account_token(tmp_path: Path) -> None:
+    token_file = tmp_path / "token"
+    token_file.write_text("first-token\n")
+    observed: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        observed.append(request.headers.get("authorization", ""))
+        return httpx.Response(200, json={"spec": {"replicas": 2}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler),
+                                 base_url="https://kubernetes.test") as client:
+        capacity = KubernetesWorkerCapacity(namespace="trpc-agent-service",
+                                            deployment="agent-worker",
+                                            client=client,
+                                            token_file=token_file)
+        await capacity.reconcile(3)
+        replacement = tmp_path / "replacement"
+        replacement.write_text("second-token\n")
+        replacement.replace(token_file)
+        await capacity.reconcile(2)
+        token_file.write_text("")
+        with pytest.raises(ValueError, match="token is empty"):
+            await capacity.reconcile(2)
+
+    assert observed == ["Bearer first-token", "Bearer first-token", "Bearer second-token"]
+
+
 class FakeWorkerLauncher:
 
     def __init__(self) -> None:
@@ -457,3 +485,22 @@ async def test_describe_worker_pool_reports_observed_health() -> None:
     assert status.draining_nodes == 1
     assert status.stale_nodes == 1
     assert status.reconciling
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("spec", [{}, {"replicas": 0}])
+async def test_kubernetes_capacity_recovers_zero_replicas(spec) -> None:
+    requests = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"spec": spec})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler),
+                                 base_url="https://kubernetes.test") as client:
+        capacity = KubernetesWorkerCapacity(namespace="trpc-agent-service",
+                                            deployment="agent-worker",
+                                            client=client)
+        await capacity.reconcile(2)
+    assert [request.method for request in requests] == ["GET", "PATCH"]
+    assert requests[1].content == b'{"spec":{"replicas":2}}'

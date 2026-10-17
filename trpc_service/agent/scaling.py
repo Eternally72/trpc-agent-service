@@ -430,6 +430,7 @@ class KubernetesWorkerCapacity:
             raise ValueError("Kubernetes namespace or Deployment name is invalid")
         self._path = f"/apis/apps/v1/namespaces/{namespace}/deployments/{deployment}/scale"
         self._owns_client = client is None
+        self._token_file = token_file
         if client is not None:
             self._client = client
             return
@@ -451,13 +452,22 @@ class KubernetesWorkerCapacity:
 
         if not 1 <= desired_nodes <= 64:
             raise ValueError("desired Worker count must be between 1 and 64")
-        response = await self._client.get(self._path)
+        headers: dict[str, str] = {}
+        if self._token_file is not None:
+            # Kubelet rotates projected service-account tokens in place. A
+            # process-scoped Authorization header eventually expires.
+            token = self._token_file.read_text(encoding="utf-8").strip()
+            if not token:
+                raise ValueError("Kubernetes service-account token is empty")
+            headers["Authorization"] = f"Bearer {token}"
+        response = await self._client.get(self._path, headers=headers)
         response.raise_for_status()
         payload = response.json()
         spec = payload.get("spec") if isinstance(payload, dict) else None
-        if not isinstance(spec, dict) or not isinstance(spec.get("replicas"), int):
+        # ScaleSpec defaults to zero; the API omits replicas for a stopped pool.
+        current = spec.get("replicas", 0) if isinstance(spec, dict) else None
+        if type(current) is not int or current < 0:
             raise ValueError("Kubernetes scale response has no integer replica count")
-        current = spec["replicas"]
         if current == desired_nodes:
             return
         updated = await self._client.patch(
@@ -465,7 +475,9 @@ class KubernetesWorkerCapacity:
             json={"spec": {
                 "replicas": desired_nodes
             }},
-            headers={"Content-Type": "application/merge-patch+json"},
+            headers={
+                **headers, "Content-Type": "application/merge-patch+json"
+            },
         )
         updated.raise_for_status()
 
