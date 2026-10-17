@@ -58,6 +58,7 @@ class Settings(BaseSettings):
     )
     auto_create_schema: bool = False
     node_id: str = ""
+    node_health_file: Path | None = None
     local_worker_nodes: int = Field(default=2, ge=1, le=64)
     worker_concurrency_per_node: int = Field(default=1, ge=1, le=256)
     worker_scaler_mode: str = Field(

@@ -142,6 +142,7 @@ async def _run_supervisor_role() -> None:
         role="supervisor",
         worker_concurrency=0,
         heartbeat_interval_seconds=settings.node_heartbeat_interval_seconds,
+        health_file=settings.node_health_file,
     )
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()

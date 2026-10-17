@@ -295,6 +295,7 @@ def build_application_container(
         role=node_role,
         worker_concurrency=app_settings.worker_concurrency,
         heartbeat_interval_seconds=app_settings.node_heartbeat_interval_seconds,
+        health_file=app_settings.node_health_file,
     )
     wecom_messages = WeComMessageService(
         wecom_adapter,

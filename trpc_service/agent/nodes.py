@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime, timedelta
 from enum import StrEnum
 import logging
+from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, select
@@ -11,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from trpc_service.storage.orm import as_utc, utc_now
 from trpc_service.storage.runtime_orm import RuntimeNodeRow
+from trpc_service.healthcheck import write_health
 
 logger = logging.getLogger(__name__)
 
@@ -180,6 +182,7 @@ class RuntimeNodeHeartbeatService:
         role: str,
         worker_concurrency: int,
         heartbeat_interval_seconds: float,
+        health_file: Path | None = None,
     ) -> None:
         if heartbeat_interval_seconds <= 0:
             raise ValueError("runtime node heartbeat interval must be positive")
@@ -190,18 +193,28 @@ class RuntimeNodeHeartbeatService:
         self._heartbeat_interval_seconds = heartbeat_interval_seconds
         self._stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
+        self._health_file = health_file
+        self._health_state = "active"
+
+    def _publish_health(self) -> None:
+        if self._health_file is not None:
+            write_health(self._health_file, self._role, self._health_state)
 
     async def start(self) -> None:
         """Register before the process starts accepting or claiming work."""
 
         if self._task is not None:
             return
+        if self._health_file is not None:
+            self._health_file.unlink(missing_ok=True)
         await self._registry.register(
             self._node_id,
             self._role,
             self._worker_concurrency,
         )
         self._stop.clear()
+        self._health_state = "active"
+        self._publish_health()
         self._task = asyncio.create_task(
             self._run(),
             name=f"runtime-node-heartbeat:{self._node_id}",
@@ -211,6 +224,8 @@ class RuntimeNodeHeartbeatService:
         """Stop heartbeat and retain an explicit stopped record."""
 
         self._stop.set()
+        if self._health_file is not None:
+            self._health_file.unlink(missing_ok=True)
         task, self._task = self._task, None
         if task is not None:
             await task
@@ -221,6 +236,8 @@ class RuntimeNodeHeartbeatService:
 
         if self._role not in {"worker", "api_worker"}:
             return False
+        self._health_state = "draining"
+        self._publish_health()
         return await self._registry.drain(self._node_id)
 
     async def _run(self) -> None:
@@ -246,5 +263,9 @@ class RuntimeNodeHeartbeatService:
                     )
                     continue
                 if not active:
+                    if self._health_file is not None:
+                        self._health_file.unlink(missing_ok=True)
                     logger.error("Runtime node %s registration is no longer active", self._node_id)
                     return
+                if not self._stop.is_set():
+                    self._publish_health()
