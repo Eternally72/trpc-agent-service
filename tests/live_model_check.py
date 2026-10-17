@@ -128,6 +128,7 @@ async def run_check(args: argparse.Namespace) -> None:
             }))["tenant_id"])
             async with sessions() as database:
                 assert await database.get(Tenant, tenant_id), "API and database do not match"
+            report(tenant=str(tenant_id))
             profile_id = (await api("POST",
                                     f"/tenants/{tenant_id}/model-profiles",
                                     json={
