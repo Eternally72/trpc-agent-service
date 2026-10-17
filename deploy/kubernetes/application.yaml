@@ -61,16 +61,13 @@ spec:
           envFrom:
             - configMapRef:
                 name: trpc-application-config
+            - secretRef:
+                name: trpc-runtime-secrets
           env:
             - name: TRPC_SERVICE_RUNTIME_ROLE
               value: api
             - name: TRPC_SERVICE_WORKER_CONCURRENCY
               value: "0"
-            - name: DASHSCOPE_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: trpc-runtime-secrets
-                  key: DASHSCOPE_API_KEY
           ports:
             - name: http
               containerPort: 8000
@@ -141,7 +138,7 @@ metadata:
   name: agent-worker
   namespace: trpc-agent-service
 spec:
-  replicas: 2
+  # Worker Scaler owns replicas; applying manifests must not reset its target.
   strategy:
     rollingUpdate:
       maxUnavailable: 1
@@ -181,16 +178,25 @@ spec:
           envFrom:
             - configMapRef:
                 name: trpc-application-config
+            - secretRef:
+                name: trpc-runtime-secrets
           env:
             - name: TRPC_SERVICE_RUNTIME_ROLE
               value: worker
             - name: TRPC_SERVICE_WORKER_CONCURRENCY
               value: "1"
-            - name: DASHSCOPE_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: trpc-runtime-secrets
-                  key: DASHSCOPE_API_KEY
+          startupProbe:
+            exec:
+              command: ["/app/.venv/bin/python", "-m", "trpc_service.healthcheck"]
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 60
+          readinessProbe:
+            exec:
+              command: ["/app/.venv/bin/python", "-m", "trpc_service.healthcheck"]
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
           resources:
             requests:
               cpu: 100m
@@ -303,6 +309,8 @@ spec:
           envFrom:
             - configMapRef:
                 name: trpc-application-config
+            - secretRef:
+                name: trpc-runtime-secrets
           env:
             - name: TRPC_SERVICE_RUNTIME_ROLE
               value: supervisor
@@ -310,6 +318,18 @@ spec:
               value: "0"
           # The supervisor imports the same typed runtime composition as
           # Workers even though it only reconciles replicas.
+          startupProbe:
+            exec:
+              command: ["/app/.venv/bin/python", "-m", "trpc_service.healthcheck"]
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 60
+          readinessProbe:
+            exec:
+              command: ["/app/.venv/bin/python", "-m", "trpc_service.healthcheck"]
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
           resources:
             requests:
               cpu: 10m
@@ -372,16 +392,25 @@ spec:
           envFrom:
             - configMapRef:
                 name: trpc-application-config
+            - secretRef:
+                name: trpc-runtime-secrets
           env:
             - name: TRPC_SERVICE_RUNTIME_ROLE
               value: channel
             - name: TRPC_SERVICE_WORKER_CONCURRENCY
               value: "0"
-            - name: DASHSCOPE_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: trpc-runtime-secrets
-                  key: DASHSCOPE_API_KEY
+          startupProbe:
+            exec:
+              command: ["/app/.venv/bin/python", "-m", "trpc_service.healthcheck"]
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 60
+          readinessProbe:
+            exec:
+              command: ["/app/.venv/bin/python", "-m", "trpc_service.healthcheck"]
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
           resources:
             requests:
               cpu: 50m

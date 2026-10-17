@@ -38,12 +38,8 @@ spec:
           envFrom:
             - configMapRef:
                 name: trpc-application-config
-          env:
-            - name: DASHSCOPE_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: trpc-runtime-secrets
-                  key: DASHSCOPE_API_KEY
+            - secretRef:
+                name: trpc-runtime-secrets
           resources:
             requests:
               cpu: 25m

@@ -18,15 +18,20 @@ if [[ "$(kubectl config current-context)" != "docker-desktop" ]]; then
     echo "error: current Kubernetes context must be docker-desktop" >&2
     exit 1
 fi
+kubectl() { command kubectl --context docker-desktop "$@"; }
 
 # Stop the reconciler first so it cannot restore Worker replicas while the
 # remaining application roles are intentionally scaled to zero.
 kubectl scale deployment/worker-scaler --namespace "$NAMESPACE" --replicas=0
 kubectl rollout status deployment/worker-scaler -n "$NAMESPACE" --timeout=120s
+kubectl wait --for=delete pod -n "$NAMESPACE" \
+    -l app.kubernetes.io/name=worker-scaler --timeout=120s
 kubectl scale deployment/gateway deployment/agent-worker deployment/channel-runtime \
     --namespace "$NAMESPACE" --replicas=0
 kubectl rollout status deployment/gateway -n "$NAMESPACE" --timeout=120s
-kubectl rollout status deployment/agent-worker -n "$NAMESPACE" --timeout=120s
+kubectl rollout status deployment/agent-worker -n "$NAMESPACE" --timeout=240s
 kubectl rollout status deployment/channel-runtime -n "$NAMESPACE" --timeout=120s
+kubectl wait --for=delete pod -n "$NAMESPACE" \
+    -l 'app.kubernetes.io/name in (gateway,agent-worker,channel-runtime)' --timeout=240s
 
 echo "Application roles stopped; stateful services and PVC data are preserved"

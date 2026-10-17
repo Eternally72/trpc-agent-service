@@ -111,6 +111,9 @@ spec:
         - name: platform-files
           secret:
             secretName: trpc-platform-files
+            items:
+              - key: postgres_password
+                path: postgres_password
             defaultMode: 0440
   volumeClaimTemplates:
     - metadata:

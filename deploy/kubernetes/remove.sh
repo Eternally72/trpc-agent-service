@@ -18,5 +18,5 @@ if [[ "$(kubectl config current-context)" != "docker-desktop" ]]; then
     exit 1
 fi
 
-kubectl delete namespace trpc-agent-service --wait=true
+kubectl --context docker-desktop delete namespace trpc-agent-service --wait=true
 echo "Removed trpc-agent-service namespace and its Kubernetes-local data"

@@ -461,6 +461,9 @@ spec:
         - name: platform-files
           secret:
             secretName: trpc-platform-files
+            items:
+              - key: grafana_admin_password
+                path: grafana_admin_password
             defaultMode: 0400
         - name: datasources
           configMap:

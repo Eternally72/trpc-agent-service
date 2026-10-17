@@ -11,6 +11,11 @@ readonly IMAGE_TAG="${TRPC_K8S_IMAGE_TAG:-0.1.0-$(date -u +%Y%m%d%H%M%S)}"
 readonly REUSE_IMAGE="${TRPC_K8S_REUSE_IMAGE:-}"
 readonly IMAGE="${REUSE_IMAGE:-trpc-agent-service:${IMAGE_TAG}}"
 readonly IMPORT_FLAG="${1:-}"
+DEPLOY_TMP=""
+trap 'if [[ -n "$DEPLOY_TMP" ]]; then rm -rf -- "$DEPLOY_TMP"; fi' EXIT
+
+# Pin every request, including long-running rollouts, to the checked cluster.
+kubectl() { command kubectl --context docker-desktop "$@"; }
 
 prune_unused_project_images() {
     local candidate_image
@@ -19,7 +24,7 @@ prune_unused_project_images() {
     # Immutable tags make every rollout deterministic, but old local tags must
     # not accumulate forever. Limit cleanup to this repository and preserve
     # every image still referenced by a normal or init container in the Namespace.
-    running_images="$(kubectl get pods -n "$NAMESPACE" -o jsonpath='{range .items[*]}{range .spec.initContainers[*]}{.image}{"\n"}{end}{range .spec.containers[*]}{.image}{"\n"}{end}{end}')"
+    running_images="$(kubectl get pods,replicasets,jobs -n "$NAMESPACE" -o jsonpath='{range .items[*]}{range .spec.initContainers[*]}{.image}{"\n"}{end}{range .spec.containers[*]}{.image}{"\n"}{end}{range .spec.template.spec.initContainers[*]}{.image}{"\n"}{end}{range .spec.template.spec.containers[*]}{.image}{"\n"}{end}{end}')"
     while IFS= read -r candidate_image; do
         [[ -n "$candidate_image" ]] || continue
         if grep -Fxq "$candidate_image" <<<"$running_images"; then
@@ -64,7 +69,12 @@ if [[ -z "$REUSE_IMAGE" && ! "$IMAGE_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$
     exit 2
 fi
 
-for command_name in docker kubectl sed date grep tail openssl; do
+if [[ -n "$REUSE_IMAGE" && ! "$REUSE_IMAGE" =~ ^[A-Za-z0-9][A-Za-z0-9._:/@-]*$ ]]; then
+    echo "error: TRPC_K8S_REUSE_IMAGE is not a valid image reference" >&2
+    exit 2
+fi
+
+for command_name in docker kubectl sed date grep openssl mktemp python3; do
     if ! command -v "$command_name" >/dev/null 2>&1; then
         echo "error: $command_name is required" >&2
         exit 127
@@ -103,13 +113,6 @@ for secret_file in postgres_password admin_bootstrap_token tenant_secret_master_
     fi
 done
 
-dashscope_api_key="$(sed -n 's/^DASHSCOPE_API_KEY=//p' "$PROJECT_ROOT/.env" | tail -n 1)"
-dashscope_api_key="${dashscope_api_key%$'\r'}"
-if [[ -z "$dashscope_api_key" ]]; then
-    echo "error: DASHSCOPE_API_KEY is empty in .env" >&2
-    exit 1
-fi
-
 if [[ -n "$REUSE_IMAGE" ]]; then
     if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
         echo "error: TRPC_K8S_REUSE_IMAGE does not exist locally: $IMAGE" >&2
@@ -120,6 +123,15 @@ else
     echo "Building $IMAGE"
     docker build --tag "$IMAGE" "$PROJECT_ROOT"
 fi
+
+# Use the image's locked Python dependencies to parse dotenv/typed model JSON.
+# Only model settings are portable: never copy localhost database/storage URLs.
+DEPLOY_TMP="$(mktemp -d)"
+docker run --rm --network none --read-only --cap-drop ALL \
+    --security-opt no-new-privileges --user "$(id -u):$(id -g)" \
+    --volume "$PROJECT_ROOT:/source:ro" --volume "$DEPLOY_TMP:/output" \
+    --entrypoint /app/.venv/bin/python "$IMAGE" \
+    /source/deploy/kubernetes/prepare_config.py --project-root /source --output-dir /output
 
 kubectl apply -f "$DEPLOY_DIR/namespace.yaml"
 
@@ -135,13 +147,12 @@ kubectl create secret generic trpc-platform-files \
     --dry-run=client -o yaml | kubectl apply -f -
 kubectl create secret generic trpc-runtime-secrets \
     --namespace "$NAMESPACE" \
-    --from-literal=DASHSCOPE_API_KEY="$dashscope_api_key" \
+    --from-env-file="$DEPLOY_TMP/runtime.env" \
     --dry-run=client -o yaml | kubectl apply -f -
-unset dashscope_api_key
 
 kubectl create configmap trpc-application-config \
     --namespace "$NAMESPACE" \
-    --from-env-file="$DEPLOY_DIR/app.env" \
+    --from-env-file="$DEPLOY_TMP/app.env" \
     --dry-run=client -o yaml | kubectl apply -f -
 kubectl create configmap trpc-otel-config \
     --namespace "$NAMESPACE" \
@@ -220,6 +231,10 @@ if ! kubectl wait --for=condition=complete job/database-migration \
     exit 1
 fi
 
+# Transfer replicas ownership from old client-side apply manifests to Scaler.
+# Remove it from last-applied first, so applying the new manifest does not reset
+# an existing target to Kubernetes' default of one replica.
+python3 "$DEPLOY_DIR/preserve_scale.py"
 sed "s|trpc-agent-service:0.1.0|$IMAGE|g" "$DEPLOY_DIR/application.yaml" | kubectl apply -f -
 # A new immutable image tag already changes each Pod template and reloads the
 # synchronized ConfigMaps and Secrets. Restart only when reusing an unchanged
@@ -233,7 +248,10 @@ kubectl rollout status deployment/agent-worker -n "$NAMESPACE" --timeout=300s
 kubectl rollout status deployment/gateway -n "$NAMESPACE" --timeout=300s
 kubectl rollout status deployment/channel-runtime -n "$NAMESPACE" --timeout=300s
 kubectl rollout status deployment/worker-scaler -n "$NAMESPACE" --timeout=180s
-prune_unused_project_images
+python3 "$DEPLOY_DIR/wait_workers.py"
+if [[ "${TRPC_K8S_PRUNE_IMAGES:-0}" == "1" ]]; then
+    prune_unused_project_images
+fi
 
 echo "Kubernetes deployment is ready"
 echo "Admin/API: http://localhost:8000"

@@ -1,8 +1,55 @@
 """Regression checks for deployment-only Kubernetes integration contracts."""
 
 from pathlib import Path
+import json
+import subprocess
+
+from deploy.kubernetes import preserve_scale
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_scale_ownership_migration_only_updates_last_applied(monkeypatch) -> None:
+    previous = {
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "metadata": {
+            "name": "agent-worker",
+            "namespace": "trpc-agent-service"
+        },
+        "spec": {
+            "replicas": 2,
+            "template": {
+                "spec": {
+                    "containers": []
+                }
+            }
+        }
+    }
+    current = {
+        "metadata": {
+            "annotations": {
+                "kubectl.kubernetes.io/last-applied-configuration": json.dumps(previous)
+            }
+        },
+        "spec": {
+            "replicas": 5
+        }
+    }
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, stdout=json.dumps(current))
+
+    monkeypatch.setattr(preserve_scale.subprocess, "run", run)
+    preserve_scale.main()
+    assert len(calls) == 2
+    assert calls[1][0][-5:] == ["apply", "set-last-applied", "--create-annotation=true", "-f", "-"]
+    updated = json.loads(calls[1][1]["input"])
+    assert "replicas" not in updated["spec"]
+    assert updated["spec"]["template"] == previous["spec"]["template"]
+    assert current["spec"]["replicas"] == 5
 
 
 def test_channel_secrets_use_encrypted_tenant_secret_store() -> None:
